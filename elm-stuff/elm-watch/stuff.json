@@ -1,0 +1,11 @@
+{
+    "port": 46637,
+    "webSocketToken": "795a2da0-5b0a-4e57-9d2c-6e614f7204cb",
+    "targets": {
+        "My target name": {
+            "compilationMode": "debug",
+            "browserUiPosition": "BottomLeft",
+            "openErrorOverlay": true
+        }
+    }
+}
