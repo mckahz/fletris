@@ -6,17 +6,39 @@ module Tetromino exposing
     , ccw
     , color
     , cw
-    , down
-    , left
+    , draw
+    , drawMino
     , minos
     , offsetTable
-    , overlaps
-    , right
+    , shift
+    , stopX
+    , stopY
+    , toRad
     , toString
     )
 
+import Animator as A exposing (Timeline)
+import Draw exposing (Drawing)
 import Element as E exposing (Color)
 import Styles
+
+
+type alias Tetromino =
+    { letter : Letter
+    , rotation : Rotation
+    , x : Timeline Int
+    , y : Timeline Int
+    }
+
+
+stopX : Tetromino -> Tetromino
+stopX tetromino =
+    { tetromino | x = A.go A.immediately (A.current tetromino.x) tetromino.x }
+
+
+stopY : Tetromino -> Tetromino
+stopY tetromino =
+    { tetromino | y = A.go A.immediately (A.current tetromino.y) tetromino.y }
 
 
 type Rotation
@@ -26,18 +48,20 @@ type Rotation
     | R270
 
 
-type alias Tetromino =
-    { letter : Letter
-    , rotation : Rotation
-    , x : Int
-    , y : Int
-    }
+toRad : Rotation -> Float
+toRad rotation =
+    case rotation of
+        R0 ->
+            0
 
+        R90 ->
+            pi / 2
 
-overlaps : Int -> Int -> Tetromino -> Bool
-overlaps x y tetromino =
-    minos tetromino
-        |> List.any (\( px, py ) -> px == x && py == y)
+        R180 ->
+            pi
+
+        R270 ->
+            -pi / 2
 
 
 type Letter
@@ -48,31 +72,6 @@ type Letter
     | Z
     | O
     | T
-
-
-color : Letter -> Color
-color letter =
-    case letter of
-        Z ->
-            Styles.zColor
-
-        L ->
-            Styles.lColor
-
-        O ->
-            Styles.oColor
-
-        S ->
-            Styles.sColor
-
-        I ->
-            Styles.iColor
-
-        J ->
-            Styles.jColor
-
-        T ->
-            Styles.tColor
 
 
 toString : Letter -> String
@@ -230,65 +229,55 @@ offsetTable letter =
 
 minos : Tetromino -> List ( Int, Int )
 minos tetromino =
-    let
-        init =
-            case tetromino.letter of
-                I ->
-                    [ ( -1, 0 ), ( 0, 0 ), ( 1, 0 ), ( 2, 0 ) ]
-
-                J ->
-                    [ ( -1, 1 ), ( -1, 0 ), ( 0, 0 ), ( 1, 0 ) ]
-
-                L ->
-                    [ ( -1, 0 ), ( 0, 0 ), ( 1, 0 ), ( 1, 1 ) ]
-
-                O ->
-                    [ ( 1, 1 ), ( 1, 0 ), ( 0, 1 ), ( 0, 0 ) ]
-
-                S ->
-                    [ ( -1, 0 ), ( 0, 0 ), ( 0, 1 ), ( 1, 1 ) ]
-
-                T ->
-                    [ ( -1, 0 ), ( 0, 0 ), ( 0, 1 ), ( 1, 0 ) ]
-
-                Z ->
-                    [ ( -1, 1 ), ( 0, 1 ), ( 0, 0 ), ( 1, 0 ) ]
-
-        rotate ( offx, offy ) =
-            case tetromino.rotation of
-                R0 ->
-                    ( offx, offy )
-
-                R90 ->
-                    ( -offy, offx )
-
-                R180 ->
-                    ( -offx, -offy )
-
-                R270 ->
-                    ( offy, -offx )
-
-        shift ( offx, offy ) =
-            ( tetromino.x + offx, tetromino.y + offy )
-    in
-    init
-        |> List.map rotate
-        |> List.map shift
+    tetromino.letter
+        |> minosRelative
+        |> List.map (shift ( A.current tetromino.x, A.current tetromino.y ))
 
 
-down : Tetromino -> Tetromino
-down tetromino =
-    { tetromino | y = tetromino.y - 1 }
+minosRelative : Letter -> List ( Int, Int )
+minosRelative letter =
+    case letter of
+        I ->
+            [ ( -1, 0 ), ( 0, 0 ), ( 1, 0 ), ( 2, 0 ) ]
+
+        J ->
+            [ ( -1, -1 ), ( -1, 0 ), ( 0, 0 ), ( 1, 0 ) ]
+
+        L ->
+            [ ( -1, 0 ), ( 0, 0 ), ( 1, 0 ), ( 1, -1 ) ]
+
+        O ->
+            [ ( 1, -1 ), ( 1, 0 ), ( 0, -1 ), ( 0, 0 ) ]
+
+        S ->
+            [ ( -1, 0 ), ( 0, 0 ), ( 0, -1 ), ( 1, -1 ) ]
+
+        T ->
+            [ ( -1, 0 ), ( 0, 0 ), ( 0, -1 ), ( 1, 0 ) ]
+
+        Z ->
+            [ ( -1, -1 ), ( 0, -1 ), ( 0, 0 ), ( 1, 0 ) ]
 
 
-left : Tetromino -> Tetromino
-left tetromino =
-    { tetromino | x = tetromino.x - 1 }
+rotate : Rotation -> ( Int, Int ) -> ( Int, Int )
+rotate rotation ( offx, offy ) =
+    case rotation of
+        R0 ->
+            ( offx, offy )
+
+        R90 ->
+            ( -offy, offx )
+
+        R180 ->
+            ( -offx, -offy )
+
+        R270 ->
+            ( offy, -offx )
 
 
-right : Tetromino -> Tetromino
-right tetromino =
-    { tetromino | x = tetromino.x + 1 }
+shift : ( Int, Int ) -> ( Int, Int ) -> ( Int, Int )
+shift ( x, y ) ( offx, offy ) =
+    ( x + offx, y + offy )
 
 
 cw : Rotation -> Rotation
@@ -321,3 +310,46 @@ ccw rotation =
 
         R270 ->
             R0
+
+
+color : Letter -> Color
+color letter =
+    case letter of
+        Z ->
+            Styles.zColor
+
+        L ->
+            Styles.lColor
+
+        O ->
+            Styles.oColor
+
+        S ->
+            Styles.sColor
+
+        I ->
+            Styles.iColor
+
+        J ->
+            Styles.jColor
+
+        T ->
+            Styles.tColor
+
+
+drawMino : Letter -> Drawing msg
+drawMino letter =
+    Draw.rect (-1 / 2) (-1 / 2) 1 1
+        |> Draw.fill (color letter)
+
+
+draw : Tetromino -> Drawing msg
+draw tetromino =
+    minos tetromino
+        |> List.map
+            (\( mx, my ) ->
+                drawMino tetromino.letter
+                    |> Draw.shift (toFloat mx) (toFloat my)
+                    |> Draw.shift (toFloat <| A.current tetromino.x) (toFloat <| A.current tetromino.y)
+            )
+        |> Draw.flatten

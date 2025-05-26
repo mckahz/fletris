@@ -8,6 +8,7 @@ module Styles exposing
     , jColor
     , junkColor
     , lColor
+    , minoSize
     , oColor
     , sColor
     , sidebarWidth
@@ -16,6 +17,11 @@ module Styles exposing
     )
 
 import Element exposing (Color, Length, px, rgb255)
+
+
+minoSize : Float
+minoSize =
+    25
 
 
 backgroundColor : Color

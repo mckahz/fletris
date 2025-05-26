@@ -1,9 +1,11 @@
 module Main exposing (main)
 
+import Animator as A exposing (Animator, Timeline)
 import Board exposing (Board)
 import Browser
 import Browser.Events as Events
 import Controller exposing (Button(..), Controller)
+import Draw exposing (Drawing)
 import Element as E exposing (Element)
 import Element.Background as Background
 import Element.Border as Border
@@ -13,8 +15,6 @@ import Json.Decode as Decode
 import Random
 import Random.List
 import Styles
-import Svg exposing (Svg)
-import Svg.Attributes as SvgA
 import Tetromino exposing (Letter(..), Rotation, Tetromino)
 import Time
 import Util
@@ -36,8 +36,7 @@ subscriptions model =
             Decode.map (Maybe.withDefault Noop << Maybe.map Pressed) Controller.buttonDecoder
         , Events.onKeyUp <|
             Decode.map (Maybe.withDefault Noop << Maybe.map Released) Controller.buttonDecoder
-
-        -- , Time.every 500 Tick
+        , A.toSubscription Tick model animator
         ]
 
 
@@ -57,19 +56,13 @@ type alias Model =
     , controller : Controller
     , hold : Maybe Letter
     , tetromino : Tetromino
-    , dropTimer : Int
     , seed : Random.Seed
     , queue : List Letter
     , time : Time.Posix
-    , das : Int
-    , arr : Int
-    , sdf : Int
+    , das : Float
+    , arr : Float
+    , sdf : Float
     }
-
-
-generateNewBag : Cmd Msg
-generateNewBag =
-    Random.generate NewBag (Random.List.shuffle [ I, L, J, S, Z, O, T ])
 
 
 init : () -> ( Model, Cmd Msg )
@@ -77,53 +70,180 @@ init _ =
     ( { time = Time.millisToPosix 0
       , board = Board.empty
       , hold = Just S
-      , tetromino = { letter = I, rotation = Tetromino.R0, x = Board.width // 2, y = Board.height - 2 }
-      , dropTimer = defaultDropTime
+      , tetromino =
+            { letter = S
+            , rotation = Tetromino.R0
+            , x = A.init Board.spawnX
+            , y = A.init Board.spawnY
+            }
       , seed = Random.initialSeed 0
       , queue = []
       , controller = Controller.default
-      , das = 100
-      , sdf = 20
-      , arr = 2
+      , das = 150
+      , sdf = 6
+      , arr = 50
       }
     , generateNewBag
     )
 
 
-spawnNext : Model -> ( Model, Cmd Msg )
-spawnNext model =
-    case model.queue of
-        [] ->
-            ( model, Cmd.none )
-
-        first :: rest ->
-            case Board.spawn first model.board of
-                Err _ ->
-                    ( { model | queue = rest }, Cmd.none )
-
-                Ok tetromino ->
-                    ( { model | queue = rest, tetromino = tetromino }
-                    , if List.length rest < 7 then
-                        generateNewBag
-
-                      else
-                        Cmd.none
-                    )
-
-
-drop : Tetromino -> Board -> Board
-drop tetromino board =
-    board
-        |> Board.place tetromino
-        |> Board.clearLines
-        |> Tuple.first
+animator : Animator Model
+animator =
+    A.animator
+        |> A.watching
+            (.y << .tetromino)
+            (\newY model ->
+                { model
+                    | tetromino =
+                        let
+                            tetromino =
+                                model.tetromino
+                        in
+                        { tetromino | y = newY }
+                }
+            )
+        |> A.watching
+            (.x << .tetromino)
+            (\newX model ->
+                { model
+                    | tetromino =
+                        let
+                            tetromino =
+                                model.tetromino
+                        in
+                        { tetromino | x = newX }
+                }
+            )
 
 
 onRelease : Controller.Button -> Model -> Model
-onRelease button model =
-    { model
-        | controller = Controller.release button model.controller
+onRelease button modelBeforeRelease =
+    let
+        model =
+            { modelBeforeRelease
+                | controller = Controller.release button modelBeforeRelease.controller
+            }
+    in
+    case button of
+        Left ->
+            { model
+                | tetromino =
+                    if Controller.isPressed Right model.controller then
+                        moveWithDas 1 model.das model.arr model.tetromino
+
+                    else
+                        Tetromino.stopX model.tetromino
+            }
+
+        Right ->
+            { model
+                | tetromino =
+                    if Controller.isPressed Left model.controller then
+                        moveWithDas -1 model.das model.arr model.tetromino
+
+                    else
+                        Tetromino.stopX model.tetromino
+            }
+
+        SD ->
+            { model | tetromino = Tetromino.stopY model.tetromino }
+
+        _ ->
+            model
+
+
+moveWithDas : Int -> Float -> Float -> Tetromino -> Tetromino
+moveWithDas dir das arr tetromino =
+    let
+        x =
+            A.current tetromino.x
+
+        autoRepeat =
+            List.range 2 Board.width
+                |> List.map (\off -> x + off * dir)
+                |> List.map
+                    (\xn ->
+                        A.event A.immediately xn
+                    )
+                |> List.intersperse (A.wait (A.millis arr))
+    in
+    { tetromino
+        | x =
+            tetromino.x
+                |> A.interrupt
+                    ([ A.event A.immediately (x + dir)
+                     , A.wait (A.millis das)
+                     ]
+                        ++ autoRepeat
+                    )
     }
+
+
+hasCollision : Board -> Tetromino -> Bool
+hasCollision board tetromino =
+    let
+        x =
+            A.current tetromino.x
+
+        y =
+            A.current tetromino.y
+
+        minos =
+            Tetromino.minos tetromino
+    in
+    List.any (\( mx, my ) -> Board.get mx my board /= Board.Empty) minos
+        || List.any (\( mx, my ) -> (mx < 0 || Board.width <= mx) || (my < -2 || Board.height <= my)) minos
+
+
+baseFallTimeMs : Float
+baseFallTimeMs =
+    500
+
+
+softDrop : Float -> Tetromino -> Tetromino
+softDrop sdf tetromino =
+    let
+        y =
+            A.current tetromino.y
+    in
+    { tetromino
+        | y =
+            tetromino.y
+                |> A.interrupt
+                    (List.range 1 (Board.height - y)
+                        |> List.map (\yoff -> A.event A.immediately (y + yoff))
+                        |> List.intersperse (A.wait (A.millis (baseFallTimeMs / sdf)))
+                    )
+    }
+
+
+ghostY : Board -> Tetromino -> Int
+ghostY board tetromino =
+    let
+        cy =
+            A.current tetromino.y
+    in
+    List.range 0 Board.height
+        |> Util.takeWhile
+            (\yoff ->
+                { tetromino
+                    | y = A.go A.immediately (cy + yoff) tetromino.y
+                }
+                    |> hasCollision board
+                    |> not
+            )
+        |> List.reverse
+        |> List.head
+        |> Maybe.withDefault cy
+
+
+hardDrop : Board -> Tetromino -> Tetromino
+hardDrop board tetromino =
+    let
+        cy =
+            A.current tetromino.y
+    in
+    { tetromino | y = A.go A.immediately (ghostY board tetromino) tetromino.y }
 
 
 onPress : Controller.Button -> Model -> ( Model, Cmd Msg )
@@ -134,76 +254,137 @@ onPress button modelBeforePress =
     in
     case button of
         SD ->
-            ( model, Cmd.none )
+            ( { model | tetromino = softDrop model.sdf model.tetromino }, Cmd.none )
 
         HD ->
-            spawnNext
-                { model
-                    | board = drop (Board.ghost model.tetromino model.board) model.board
-                }
+            ( { model | tetromino = hardDrop model.board model.tetromino }, Cmd.none )
 
         Hold ->
             case model.hold of
                 Just hold ->
                     ( { model
-                        | tetromino = Board.spawn hold model.board |> Result.withDefault model.tetromino
+                        | tetromino =
+                            { letter = hold
+                            , rotation = Tetromino.R0
+                            , x = A.go A.immediately Board.spawnX model.tetromino.x
+                            , y = A.go A.immediately Board.spawnY model.tetromino.y
+                            }
                         , hold = Just model.tetromino.letter
                       }
                     , Cmd.none
                     )
 
                 Nothing ->
-                    spawnNext { model | hold = Just model.tetromino.letter }
+                    ( model, Cmd.none )
 
         Left ->
-            ( { model | tetromino = moveTetromino Controller.DLeft model.board model.tetromino }
+            ( { model
+                | tetromino =
+                    if Controller.isPressed Right model.controller then
+                        Tetromino.stopX model.tetromino
+
+                    else
+                        moveWithDas -1 model.das model.arr model.tetromino
+              }
             , Cmd.none
             )
 
         Right ->
-            ( { model | tetromino = moveTetromino Controller.DRight model.board model.tetromino }
+            ( { model
+                | tetromino =
+                    if Controller.isPressed Left model.controller then
+                        Tetromino.stopX model.tetromino
+
+                    else
+                        moveWithDas 1 model.das model.arr model.tetromino
+              }
             , Cmd.none
             )
 
         Cw ->
-            ( { model | tetromino = rotateWithKickBack Tetromino.cw model.board model.tetromino }
+            ( { model
+                | tetromino = rotateWithKickBack Tetromino.cw model.board model.tetromino
+              }
             , Cmd.none
             )
 
         Ccw ->
-            ( { model | tetromino = rotateWithKickBack Tetromino.ccw model.board model.tetromino }
+            ( { model
+                | tetromino = rotateWithKickBack Tetromino.ccw model.board model.tetromino
+              }
             , Cmd.none
             )
 
         R180 ->
-            ( { model | tetromino = rotateWithKickBack (Tetromino.ccw << Tetromino.ccw) model.board model.tetromino }
+            ( { model
+                | tetromino =
+                    rotateWithKickBack Tetromino.ccw model.board <|
+                        rotateWithKickBack Tetromino.ccw model.board <|
+                            model.tetromino
+              }
             , Cmd.none
             )
 
 
-moveTetromino : Controller.Direction -> Board -> Tetromino -> Tetromino
-moveTetromino direction board tetromino =
+tick : Time.Posix -> Model -> Model
+tick time model =
     let
-        move =
-            case direction of
-                Controller.DLeft ->
-                    Tetromino.left
+        updated =
+            A.update time animator model
 
-                Controller.DRight ->
-                    Tetromino.right
+        nextTetromino =
+            updated.tetromino
 
-                Controller.Neutral ->
-                    identity
+        xAligned =
+            { nextTetromino | x = model.tetromino.x }
+
+        yAligned =
+            { nextTetromino | y = model.tetromino.y }
+
+        board =
+            updated.board
     in
-    tetromino
-        |> move
-        |> Board.collide board
-        |> Result.withDefault tetromino
+    case ( hasCollision board xAligned, hasCollision board yAligned, hasCollision board nextTetromino ) of
+        ( False, _, False ) ->
+            updated
+
+        ( True, False, _ ) ->
+            { updated
+                | tetromino =
+                    let
+                        t =
+                            updated.tetromino
+                    in
+                    { t | x = A.go A.immediately (A.previous t.x) t.x }
+            }
+
+        ( False, _, True ) ->
+            { updated
+                | tetromino =
+                    let
+                        t =
+                            updated.tetromino
+                    in
+                    { t | y = A.go A.immediately (A.previous t.y) t.y }
+            }
+
+        ( True, True, _ ) ->
+            { updated
+                | tetromino =
+                    let
+                        t =
+                            updated.tetromino
+                    in
+                    { t
+                        | x = A.go A.immediately (A.previous t.x) t.x
+                        , y = A.go A.immediately (A.previous t.y) t.y
+                    }
+            }
 
 
-defaultDropTime : Int
-defaultDropTime =
-    100
+generateNewBag : Cmd Msg
+generateNewBag =
+    Random.generate NewBag (Random.List.shuffle [ I, L, J, S, Z, O, T ])
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -213,25 +394,18 @@ update msg model =
             ( model, Cmd.none )
 
         DasChanged to ->
-            ( { model | das = round to }, Cmd.none )
+            ( { model | das = to }, Cmd.none )
 
         SdfChanged to ->
-            ( { model | sdf = round to }, Cmd.none )
+            ( { model | sdf = to }, Cmd.none )
 
         ArrChanged to ->
-            ( { model | arr = round to }, Cmd.none )
+            ( { model | arr = to }, Cmd.none )
 
         Tick time ->
-            let
-                dt =
-                    Time.posixToMillis time - Time.posixToMillis model.time
-            in
-            { model
-                | time = time
-                , dropTimer = model.dropTimer - dt
-            }
-                |> dropOnTimeOut
-                |> (\m -> ( m, Cmd.none ))
+            ( tick time model
+            , Cmd.none
+            )
 
         Pressed button ->
             if Controller.isPressed button model.controller then
@@ -241,34 +415,14 @@ update msg model =
                 onPress button model
 
         Released button ->
-            ( onRelease button model, Cmd.none )
+            if Controller.isReleased button model.controller then
+                ( model, Cmd.none )
+
+            else
+                ( onRelease button model, Cmd.none )
 
         NewBag bag ->
             ( { model | queue = List.append model.queue bag }, Cmd.none )
-
-
-dropOnTimeOut : Model -> Model
-dropOnTimeOut model =
-    let
-        ghost =
-            Board.ghost model.tetromino model.board
-    in
-    if model.dropTimer > 0 then
-        model
-
-    else if ghost.y == model.tetromino.y then
-        { model
-            | board = drop model.tetromino model.board
-        }
-
-    else
-        { model
-            | tetromino =
-                model.tetromino
-                    |> Tetromino.down
-                    |> Board.collide model.board
-                    |> Result.withDefault model.tetromino
-        }
 
 
 rotateWithKickBack : (Rotation -> Rotation) -> Board -> Tetromino -> Tetromino
@@ -285,24 +439,20 @@ rotateWithKickBack rotate board tetromino =
 
         kickbacks =
             List.map2 (\( x2, y2 ) ( x1, y1 ) -> ( x2 - x1, y2 - y1 )) toOffsets fromOffsets
+
+        movePiece ( kx, ky ) =
+            { letter = tetromino.letter
+            , x = A.go A.immediately (A.current tetromino.x - kx) tetromino.x
+            , y = A.go A.immediately (A.current tetromino.y - ky) tetromino.y
+            , rotation = rotate tetromino.rotation
+            }
     in
     kickbacks
-        |> List.filterMap
-            (\( kx, ky ) ->
-                let
-                    kickedTetromino =
-                        { tetromino | x = tetromino.x - kx, y = tetromino.y - ky, rotation = rotate tetromino.rotation }
-                in
-                Board.collide board kickedTetromino
-                    |> Result.toMaybe
-            )
+        |> Util.dropWhile
+            (hasCollision board << movePiece)
         |> List.head
+        |> Maybe.map movePiece
         |> Maybe.withDefault tetromino
-
-
-minoSize : Int
-minoSize =
-    25
 
 
 view : Model -> Browser.Document Msg
@@ -313,223 +463,208 @@ view model =
             [ Background.color Styles.backgroundColor
             , Font.color Styles.fontColor
             ]
-            (viewBody model)
+          <|
+            viewBody model
+
+        --(viewBody model)
         ]
     }
 
 
-render : Int -> Int -> List (Svg msg) -> Element msg
-render width height =
+standaloneTetromino : List (E.Attribute msg) -> Letter -> Element msg
+standaloneTetromino attrs letter =
     let
-        w =
-            String.fromInt width
-
-        h =
-            String.fromInt height
-    in
-    E.html
-        << Svg.svg
-            [ SvgA.width w
-            , SvgA.height h
-            , SvgA.viewBox ("0 0 " ++ w ++ " " ++ h)
-            ]
-
-
-toHexString : E.Color -> String
-toHexString color =
-    let
-        truncate str =
-            String.dropLeft (max 0 (String.length str - 2)) str
-
-        intToHex dec =
-            case dec of
-                15 ->
-                    "F"
-
-                14 ->
-                    "E"
-
-                13 ->
-                    "D"
-
-                12 ->
-                    "C"
-
-                11 ->
-                    "B"
-
-                10 ->
-                    "A"
+        offx =
+            case letter of
+                O ->
+                    -1
 
                 _ ->
-                    if dec >= 16 then
-                        truncate (intToHex (dec // 16) ++ intToHex (dec |> modBy 16))
+                    0
 
-                    else
-                        String.fromInt dec
+        offy =
+            case letter of
+                I ->
+                    0
 
-        { red, green, blue, alpha } =
-            E.toRgb color
+                _ ->
+                    1
 
-        ired =
-            floor <| 255 * red
+        maxWidth =
+            4
 
-        igreen =
-            floor <| 255 * green
+        maxHeight =
+            2
 
-        iblue =
-            floor <| 255 * blue
-
-        ialpha =
-            floor <| 255 * alpha
+        padding =
+            0.5
     in
-    Debug.log "final" <| "#" ++ intToHex ired ++ intToHex igreen ++ intToHex iblue
+    Tetromino.draw { letter = letter, x = A.init 0, y = A.init 0, rotation = Tetromino.R0 }
+        |> renderScaled
+            -(offx + 1.5 + padding)
+            -(offy + 0.5 + padding)
+            (maxWidth + 2 * padding)
+            ((if letter == I then
+                1
+
+              else
+                2
+             )
+                + 2
+                * padding
+            )
+            attrs
 
 
-mino : Int -> Int -> Letter -> Svg msg
-mino x y letter =
-    Svg.rect
-        [ SvgA.x (String.fromInt (minoSize * x))
-        , SvgA.y (String.fromInt (minoSize * y))
-        , SvgA.width (String.fromInt minoSize)
-        , SvgA.height (String.fromInt minoSize)
-        ]
-        []
+renderScaled : Float -> Float -> Float -> Float -> List (E.Attribute msg) -> Drawing msg -> Element msg
+renderScaled x y w h attrs drawing =
+    let
+        unit =
+            Styles.minoSize
+
+        sx =
+            x * unit
+
+        sy =
+            y * unit
+
+        sw =
+            w * unit
+
+        sh =
+            h * unit
+    in
+    drawing
+        |> Draw.scale unit unit
+        |> Draw.render sx sy sw sh attrs
 
 
 viewBody : Model -> Element Msg
 viewBody model =
     E.row [ E.centerX, E.centerY ]
-        [ -- Hold
-          E.column
-            [ E.alignTop
-            , Border.color Styles.highlightColor
-            , Border.width Styles.borderWidthPx
-            , E.width Styles.sidebarWidth
-            , E.height <| E.px 80
-            ]
-            [ E.el
+        [ viewHold model
+        , viewBoard model
+        , viewNext model
+        , E.none -- viewSettings model
+        ]
+
+
+viewHold : Model -> Element msg
+viewHold model =
+    E.column
+        [ E.alignTop
+        , Border.color Styles.highlightColor
+        , Border.width Styles.borderWidthPx
+        ]
+        [ E.text "HOLD"
+            |> E.el
                 [ Background.color Styles.highlightColor
                 , E.width E.fill
                 ]
-              <|
-                E.text "HOLD"
-            , case model.hold of
-                Nothing ->
-                    E.none
+        , model.hold
+            |> Maybe.map (standaloneTetromino [])
+            |> Maybe.withDefault E.none
+            |> E.el [ E.padding 10 ]
+        ]
 
-                Just letter ->
-                    let
-                        unit =
-                            String.fromInt minoSize
 
-                        tetromino =
-                            Svg.g
-                                [ SvgA.fill (toHexString (Tetromino.color letter)) ]
-                                [ mino -1 0 letter
-                                , mino 0 0 letter
-                                , mino 0 -1 letter
-                                , mino 1 -1 letter
-                                ]
-                    in
-                    render (minoSize * 5) (minoSize * 3) [ tetromino ]
-            ]
-        , -- Board
-          List.range 0 (Board.width * Board.height - 1)
-            |> List.map
-                (\i ->
-                    let
-                        x =
-                            i |> remainderBy Board.width
+viewBoard : Model -> Element msg
+viewBoard model =
+    let
+        tetromino =
+            Tetromino.draw model.tetromino
+                |> Draw.rotate (Tetromino.toRad model.tetromino.rotation)
+                |> Draw.shift
+                    (toFloat <| A.current model.tetromino.x)
+                    (toFloat <| A.current model.tetromino.y)
 
-                        y =
-                            i // Board.width
+        margin =
+            0.1
+    in
+    List.range 0 9
+        |> List.concatMap
+            (\x ->
+                List.range 0 21
+                    |> List.map (\y -> ( x, y ))
+            )
+        |> List.filterMap
+            (\( x, y ) ->
+                case Board.get x y model.board of
+                    Board.Empty ->
+                        Nothing
 
-                        cell =
-                            if Tetromino.overlaps x y model.tetromino then
-                                Board.Mino model.tetromino.letter
+                    Board.Junk ->
+                        Nothing
 
-                            else
-                                Board.get x y model.board
+                    Board.Mino letter ->
+                        Tetromino.drawMino letter
+                            |> Draw.shift (toFloat x) (toFloat y)
+                            |> Draw.fill (Tetromino.color letter)
+                            |> Just
+            )
+        |> Draw.flatten
+        |> Draw.over tetromino
+        |> renderScaled
+            -(0.5 + margin)
+            (0.5 - margin)
+            (toFloat Board.width + 2 * margin)
+            (toFloat Board.height + 2 * margin)
+            [ E.alignTop, Background.color Styles.boardColor ]
 
-                        ghost =
-                            Board.ghost model.tetromino model.board
-                    in
-                    E.el
-                        [ E.width (E.px minoSize)
-                        , E.height (E.px minoSize)
-                        , Background.color <|
-                            case cell of
-                                Board.Empty ->
-                                    Styles.boardColor
 
-                                Board.Junk ->
-                                    Styles.junkColor
-
-                                Board.Mino t ->
-                                    Tetromino.color t
-                        , Border.width
-                            (if cell == Board.Empty && Tetromino.overlaps x y ghost then
-                                2
-
-                             else
-                                0
-                            )
-                        ]
-                        E.none
-                )
-            |> Util.chunksOf Board.width
-            |> List.reverse
-            |> List.map (E.row [])
-            |> E.column []
-        , -- Next
-          E.column
-            [ E.width Styles.sidebarWidth
-            , E.alignTop
-            , Border.color Styles.highlightColor
-            , Border.width Styles.borderWidthPx
-            ]
-            [ E.el
+viewNext : Model -> Element msg
+viewNext model =
+    E.column
+        [ E.alignTop
+        , Border.color Styles.highlightColor
+        , Border.width Styles.borderWidthPx
+        ]
+        [ E.text "NEXT"
+            |> E.el
                 [ Background.color Styles.highlightColor
                 , E.width E.fill
                 ]
-              <|
-                E.text "NEXT"
-            , E.column []
-                (model.queue
-                    |> List.take 5
-                    |> List.map (E.text << Tetromino.toString)
-                )
+        , E.column
+            [ E.padding 10
+            , E.spacing 10
+            , E.height <| E.px <| round <| 5 * 2 * 1.8 * Styles.minoSize
             ]
-        , (\_ -> E.none) <|
-            E.column []
-                [ E.text "Settings"
-                , Input.slider []
-                    { onChange = DasChanged
-                    , label = Input.labelLeft [] (E.text "DAS")
-                    , min = 1
-                    , max = 300
-                    , value = toFloat model.das
-                    , thumb = Input.defaultThumb
-                    , step = Just 1
-                    }
-                , Input.slider []
-                    { onChange = ArrChanged
-                    , label = Input.labelLeft [] (E.text "ARR")
-                    , min = 1
-                    , max = 1000
-                    , value = toFloat model.arr
-                    , thumb = Input.defaultThumb
-                    , step = Just 1
-                    }
-                , Input.slider []
-                    { onChange = SdfChanged
-                    , label = Input.labelLeft [] (E.text "SDF")
-                    , min = 2
-                    , max = 50
-                    , value = toFloat model.sdf
-                    , thumb = Input.defaultThumb
-                    , step = Just 1
-                    }
-                ]
+            (model.queue
+                |> List.take 5
+                |> List.map (standaloneTetromino [])
+            )
+        ]
+
+
+viewSettings : Model -> Element Msg
+viewSettings model =
+    E.column []
+        [ E.text "Settings"
+        , Input.slider []
+            { onChange = DasChanged
+            , label = Input.labelLeft [] (E.text "DAS")
+            , min = 1
+            , max = 300
+            , value = model.das
+            , thumb = Input.defaultThumb
+            , step = Just 1
+            }
+        , Input.slider []
+            { onChange = ArrChanged
+            , label = Input.labelLeft [] (E.text "ARR")
+            , min = 1
+            , max = 1000
+            , value = model.arr
+            , thumb = Input.defaultThumb
+            , step = Just 1
+            }
+        , Input.slider []
+            { onChange = SdfChanged
+            , label = Input.labelLeft [] (E.text "SDF")
+            , min = 2
+            , max = 50
+            , value = model.sdf
+            , thumb = Input.defaultThumb
+            , step = Just 1
+            }
         ]
