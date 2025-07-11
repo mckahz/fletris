@@ -3,6 +3,7 @@ module Linear exposing
     , Vector
     , add
     , compose
+    , getScale
     , identity
     , rotation
     , scale
@@ -47,6 +48,26 @@ scale x y =
         , c23 = 0
         , c33 = 1
         }
+
+
+getScale : Transform -> Vector
+getScale (Transform t) =
+    let
+        a =
+            t.c11
+
+        b =
+            t.c12
+
+        c =
+            t.c21
+
+        d =
+            t.c22
+    in
+    { x = sqrt (a * a + c * c)
+    , y = sqrt (b * b + d * d)
+    }
 
 
 shift : Float -> Float -> Transform

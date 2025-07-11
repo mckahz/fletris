@@ -1,49 +1,218 @@
 module Draw exposing
     ( Drawing
+    , behind
+    , clip
+    , empty
     , fill
     , flatten
+    , image
     , over
     , rect
     , render
     , rotate
     , scale
     , shift
+    , stroke
+    , strokeWidth
     )
 
 import Element as E exposing (Color, Element)
 import Html exposing (Html)
+import Html.Attributes exposing (href)
 import Linear exposing (Transform, Vector)
-import Svg exposing (Svg)
-import Svg.Attributes as SvgA
+import Svg as S
+import Svg.Attributes as A
 import Util
 
 
+type Object msg
+    = Svg (S.Svg msg)
+    | PixelArt
+        { palette : List Color
+        , width : Int
+        , pixels : List Int
+        }
+    | DrawingObject (Drawing msg)
+
+
+type alias Rect =
+    { x : Float, y : Float, w : Float, h : Float }
+
+
+rectCorners : Rect -> List Vector
+rectCorners r =
+    let
+        tl =
+            { x = r.x, y = r.y }
+
+        tr =
+            { x = r.x + r.w, y = r.y }
+
+        bl =
+            { x = r.x, y = r.y + r.h }
+
+        br =
+            { x = r.x + r.w, y = r.y + r.h }
+    in
+    [ tl
+    , bl
+    , br
+    , tr
+    ]
+
+
+pointsString : List Vector -> String
+pointsString points =
+    let
+        toStr v =
+            String.fromFloat v.x ++ "," ++ String.fromFloat v.y
+    in
+    points
+        |> List.map toStr
+        |> String.join " "
+
+
+type alias Params =
+    { transform : Transform
+    , clip : Rect
+    , fill : Color
+    , stroke : Color
+    , strokeWidth : Float
+    }
+
+
 type Drawing msg
-    = Drawing (Transform -> Color -> Svg msg)
+    = Drawing (List (Params -> Object msg))
+
+
+
+-- to avoid the seam between tiles, we scale up everything by a tiny amount.
+
+
+epsilon : Float
+epsilon =
+    0.05
 
 
 render : Float -> Float -> Float -> Float -> List (E.Attribute msg) -> Drawing msg -> Element msg
-render x y w h attrs (Drawing drawing) =
+render x y w h attrs drawing =
     let
-        t =
-            Linear.shift -x -y
+        invisible =
+            E.rgba 0 0 0 0
     in
-    [ drawing t (E.rgb 0 0 0) ]
-        |> Svg.svg [ SvgA.width (String.fromFloat w), SvgA.height (String.fromFloat h) ]
+    S.svg [ A.width (String.fromFloat w), A.height (String.fromFloat h) ]
+        [ drawing
+            |> renderDrawing
+                { transform =
+                    Linear.shift -x -y
+                , fill =
+                    invisible
+                , stroke =
+                    invisible
+                , strokeWidth = 0
+                , clip =
+                    let
+                        frustomDiameter =
+                            2000000
+                    in
+                    { x = -frustomDiameter / 2, y = -frustomDiameter / 2, w = frustomDiameter, h = frustomDiameter }
+                }
+        ]
         |> E.html
+        |> E.el attrs
 
 
-empty : Drawing msg
-empty =
-    Drawing
-        (\_ _ ->
-            --Svg.circle [ SvgA.cx "0", SvgA.cy "0", SvgA.fill "red", SvgA.r "10" ] []
-            Svg.circle [] []
-        )
+renderDrawing : Params -> Drawing msg -> S.Svg msg
+renderDrawing params (Drawing drawing) =
+    renderDrawingHelp 0 params (Drawing drawing)
+
+
+renderDrawingHelp : Int -> Params -> Drawing msg -> S.Svg msg
+renderDrawingHelp depth params (Drawing drawing) =
+    drawing
+        |> List.foldl
+            (\lazyObject { d, objects } ->
+                { d = d - 1
+                , objects = renderObject d params (lazyObject params) :: objects
+                }
+            )
+            { d = depth, objects = [] }
+        |> .objects
+        |> S.g
+            []
+
+
+renderObject : Int -> Params -> Object msg -> S.Svg msg
+renderObject depth params object =
+    case object of
+        Svg svg ->
+            svg
+
+        DrawingObject drawing ->
+            renderDrawingHelp depth params drawing
+
+        PixelArt img ->
+            Debug.todo "bmp"
 
 
 
 -- Primatives
+
+
+empty : Drawing msg
+empty =
+    Drawing []
+
+
+image : String -> Drawing msg
+image url =
+    Drawing
+        [ \params ->
+            let
+                origin =
+                    Linear.transform params.transform { x = 0, y = 0 }
+
+                unit =
+                    Linear.getScale <|
+                        Linear.compose
+                            (let
+                                s =
+                                    1 / 16
+                             in
+                             Linear.scale s s
+                            )
+                            params.transform
+
+                topLeft =
+                    { x = origin.x - unit.x * (params.clip.x + params.clip.w / 2)
+                    , y = origin.y - unit.y * (params.clip.y + params.clip.h / 2)
+                    }
+            in
+            Svg <|
+                S.image
+                    [ A.xlinkHref url
+                    , A.x <| String.fromFloat topLeft.x
+                    , A.y <| String.fromFloat topLeft.y
+                    , A.height <| String.fromFloat <| 16 * unit.y
+                    , A.imageRendering "pixelated"
+                    , let
+                        format { x, y } =
+                            String.fromFloat x ++ " " ++ String.fromFloat y
+                      in
+                      A.clipPath <|
+                        (++) "polygon(" <|
+                            String.join ","
+                                (List.map (format << Linear.transform (Linear.scale unit.x unit.y))
+                                    [ { x = params.clip.x, y = params.clip.y }
+                                    , { x = params.clip.x + params.clip.w, y = params.clip.y }
+                                    , { x = params.clip.x + params.clip.w, y = params.clip.y + params.clip.h }
+                                    , { x = params.clip.x, y = params.clip.y + params.clip.h }
+                                    ]
+                                )
+                                ++ ")"
+                    ]
+                    []
+        ]
 
 
 line : Float -> Drawing msg
@@ -56,47 +225,34 @@ circ x y r =
     Debug.todo "circ"
 
 
-rect : Float -> Float -> Float -> Float -> Drawing msg
-rect x y w h =
-    Drawing <|
-        \transform color ->
-            let
-                tl =
-                    Linear.transform transform { x = x, y = y }
-
-                tr =
-                    Linear.transform transform { x = x + w, y = y }
-
-                bl =
-                    Linear.transform transform { x = x, y = y + h }
-
-                br =
-                    Linear.transform transform { x = x + w, y = y + h }
-
-                toStr v =
-                    String.fromFloat v.x ++ "," ++ String.fromFloat v.y
-            in
-            Svg.polygon
-                [ SvgA.points <| String.join " " <| List.map toStr [ tl, tr, br, bl ]
-                , SvgA.fill (Util.toHexString color)
-                , SvgA.strokeWidth "2"
-                , SvgA.stroke "#000000"
-                ]
-                []
+rect : Rect -> Drawing msg
+rect r =
+    scale (1 + epsilon) (1 + epsilon) <|
+        Drawing <|
+            [ \params ->
+                Svg <|
+                    S.polygon
+                        [ A.points <| pointsString <| List.map (Linear.transform params.transform) <| rectCorners r
+                        , A.fill (Util.toHexString params.fill)
+                        , A.strokeWidth <| String.fromFloat params.strokeWidth
+                        , A.stroke (Util.toHexString params.stroke)
+                        ]
+                        []
+            ]
 
 
 
 -- Combinations
 
 
+behind : Drawing msg -> Drawing msg -> Drawing msg
+behind (Drawing d1) (Drawing d2) =
+    Drawing <| List.append d1 d2
+
+
 over : Drawing msg -> Drawing msg -> Drawing msg
 over (Drawing d1) (Drawing d2) =
-    Drawing <|
-        \t c ->
-            Svg.g []
-                [ d1 t c
-                , d2 t c
-                ]
+    Drawing <| List.append d2 d1
 
 
 flatten : List (Drawing msg) -> Drawing msg
@@ -111,22 +267,41 @@ flatten =
 shift : Float -> Float -> Drawing msg -> Drawing msg
 shift x y (Drawing drawing) =
     Drawing <|
-        \transform ->
-            drawing <| Linear.compose (Linear.shift x y) transform
+        List.map
+            (\lazyObject params ->
+                lazyObject { params | transform = Linear.compose (Linear.shift x y) params.transform }
+            )
+            drawing
 
 
 rotate : Float -> Drawing msg -> Drawing msg
 rotate amount (Drawing drawing) =
     Drawing <|
-        \transform ->
-            drawing <| Linear.compose (Linear.rotation -amount) transform
+        List.map
+            (\lazyObject params ->
+                lazyObject { params | transform = Linear.compose (Linear.rotation -amount) params.transform }
+            )
+            drawing
 
 
 scale : Float -> Float -> Drawing msg -> Drawing msg
 scale x y (Drawing drawing) =
     Drawing <|
-        \transform ->
-            drawing <| Linear.compose (Linear.scale x y) transform
+        List.map
+            (\lazyObject params ->
+                lazyObject { params | transform = Linear.compose (Linear.scale x y) params.transform }
+            )
+            drawing
+
+
+clip : Rect -> Drawing msg -> Drawing msg
+clip r (Drawing drawing) =
+    Drawing <|
+        List.map
+            (\lazyObject params ->
+                lazyObject { params | clip = r }
+            )
+            drawing
 
 
 
@@ -135,4 +310,14 @@ scale x y (Drawing drawing) =
 
 fill : Color -> Drawing msg -> Drawing msg
 fill color (Drawing drawing) =
-    Drawing <| \t _ -> drawing t color
+    Drawing <| List.map (\lazyObject params -> lazyObject { params | fill = color }) drawing
+
+
+stroke : Color -> Drawing msg -> Drawing msg
+stroke color (Drawing drawing) =
+    Drawing <| List.map (\lazyObject params -> lazyObject { params | stroke = color }) drawing
+
+
+strokeWidth : Float -> Drawing msg -> Drawing msg
+strokeWidth width (Drawing drawing) =
+    Drawing <| List.map (\lazyObject params -> lazyObject { params | strokeWidth = width }) drawing

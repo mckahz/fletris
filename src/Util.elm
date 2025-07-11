@@ -1,39 +1,23 @@
-module Util exposing (chunksOf, dropWhile, takeWhile, toHexString)
+module Util exposing (chunksOf, flip, sign, toHexString)
 
 import Element exposing (Color, toRgb)
 
 
-takeWhile : (a -> Bool) -> List a -> List a
-takeWhile p list =
-    let
-        iter l acc =
-            case l of
-                [] ->
-                    acc
-
-                h :: t ->
-                    if p h then
-                        iter t (h :: acc)
-
-                    else
-                        acc
-    in
-    iter list []
-        |> List.reverse
+flip : (b -> a -> c) -> a -> b -> c
+flip f a b =
+    f b a
 
 
-dropWhile : (a -> Bool) -> List a -> List a
-dropWhile p list =
-    case list of
-        [] ->
-            []
+sign : number -> number
+sign x =
+    if x > 0 then
+        1
 
-        h :: t ->
-            if p h then
-                dropWhile p t
+    else if x == 0 then
+        0
 
-            else
-                h :: t
+    else
+        -1
 
 
 toHexString : Color -> String

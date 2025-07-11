@@ -1,216 +1,265 @@
 module Tetromino exposing
-    ( Letter(..)
+    ( Dir(..)
+    , Motion(..)
     , OffsetTable
-    , Rotation(..)
     , Tetromino
-    , ccw
-    , color
-    , cw
+    , arrEvents
+    , dasEvents
+    , decode
+    , dirToInt
     , draw
     , drawMino
+    , encode
+    , getX
+    , getY
     , minos
+    , move
     , offsetTable
+    , setX
+    , setY
     , shift
-    , stopX
-    , stopY
-    , toRad
-    , toString
     )
 
-import Animator as A exposing (Timeline)
+import Animate as A exposing (Timeline)
 import Draw exposing (Drawing)
-import Element as E exposing (Color)
-import Styles
+import Json.Decode as Decode
+import Json.Encode as Encode
+import Settings
+import Tetromino.Letter as Letter exposing (Letter(..))
+import Tetromino.Orientation as Orientation exposing (Orientation(..))
+
+
+encode : Tetromino -> Encode.Value
+encode tetromino =
+    Encode.object
+        [ ( "letter", Letter.encode tetromino.letter )
+        , ( "orientation", Orientation.encode tetromino.orientation )
+        , ( "x", Encode.int <| .position <| A.current tetromino.x )
+        , ( "y", Encode.int <| A.current tetromino.y )
+        ]
+
+
+decode : Decode.Decoder Tetromino
+decode =
+    Decode.map4 Tetromino
+        (Decode.field "letter" Letter.decode)
+        (Decode.field "orientation" Orientation.decode)
+        (Decode.field "x" (Decode.int |> Decode.map (\x -> A.init { position = x, motion = Nothing })))
+        (Decode.field "y" (Decode.int |> Decode.map A.init))
 
 
 type alias Tetromino =
     { letter : Letter
-    , rotation : Rotation
-    , x : Timeline Int
+    , orientation : Orientation
+    , x : Timeline { position : Int, motion : Maybe ( Motion, Dir ) }
     , y : Timeline Int
     }
 
 
-stopX : Tetromino -> Tetromino
-stopX tetromino =
-    { tetromino | x = A.go A.immediately (A.current tetromino.x) tetromino.x }
+type Motion
+    = Das
+    | Arr
 
 
-stopY : Tetromino -> Tetromino
-stopY tetromino =
-    { tetromino | y = A.go A.immediately (A.current tetromino.y) tetromino.y }
+type Dir
+    = Left
+    | Right
 
 
-type Rotation
-    = R0
-    | R90
-    | R180
-    | R270
+dirToInt : Dir -> Int
+dirToInt dir =
+    case dir of
+        Right ->
+            1
+
+        Left ->
+            -1
 
 
-toRad : Rotation -> Float
-toRad rotation =
-    case rotation of
-        R0 ->
-            0
+move : Settings.Handling -> Motion -> Dir -> Tetromino -> Tetromino
+move handling motion dir tetromino =
+    let
+        events =
+            case motion of
+                Arr ->
+                    arrEvents
 
-        R90 ->
-            pi / 2
-
-        R180 ->
-            pi
-
-        R270 ->
-            -pi / 2
-
-
-type Letter
-    = I
-    | L
-    | J
-    | S
-    | Z
-    | O
-    | T
+                Das ->
+                    dasEvents
+    in
+    { tetromino
+        | x =
+            tetromino.x
+                |> A.interrupt (events handling (getX tetromino) dir)
+    }
 
 
-toString : Letter -> String
-toString letter =
-    case letter of
-        Z ->
-            "Z"
+dasEvents : Settings.Handling -> Int -> Dir -> List (A.Step { position : Int, motion : Maybe ( Motion, Dir ) })
+dasEvents handling x dir =
+    [ A.go A.immediately { position = x + dirToInt dir, motion = Just <| ( Das, dir ) }
+    , A.wait (A.millis handling.das)
+    ]
+        ++ arrEvents handling (x + dirToInt dir) dir
 
-        L ->
-            "L"
 
-        O ->
-            "O"
+arrEvents : Settings.Handling -> Int -> Dir -> List (A.Step { position : Int, motion : Maybe ( Motion, Dir ) })
+arrEvents handling x dir =
+    let
+        offsetToEvent off =
+            A.go A.immediately { position = x + off * dirToInt dir, motion = Just <| ( Arr, dir ) }
 
-        S ->
-            "S"
+        maxOffset =
+            10
+    in
+    case handling.arr of
+        Settings.ArrInfinite ->
+            [ offsetToEvent maxOffset ]
 
-        I ->
-            "I"
+        Settings.ArrGradual arr ->
+            List.range 1 maxOffset
+                |> List.map offsetToEvent
+                |> List.intersperse (A.wait (A.millis arr))
 
-        J ->
-            "J"
 
-        T ->
-            "T"
+getX : Tetromino -> Int
+getX tetromino =
+    tetromino.x
+        |> A.current
+        |> .position
+
+
+getY : Tetromino -> Int
+getY tetromino =
+    tetromino.y
+        |> A.current
+
+
+setX : Int -> Tetromino -> Tetromino
+setX x tetromino =
+    { tetromino | x = A.init { position = x, motion = Nothing } }
+
+
+setY : Int -> Tetromino -> Tetromino
+setY y tetromino =
+    { tetromino | y = A.init y }
+
+
+
+-- Hard coded SRS offset tables
 
 
 type alias OffsetTable =
-    Rotation -> Int -> ( Int, Int )
+    Orientation -> Int -> ( Int, Int )
 
 
 offsetJLSTZ : OffsetTable
-offsetJLSTZ rotation n =
-    case ( rotation, n ) of
-        ( R270, 2 ) ->
+offsetJLSTZ orientation n =
+    case ( orientation, n ) of
+        ( East, 2 ) ->
             ( 1, 0 )
 
-        ( R270, 3 ) ->
-            ( 1, -1 )
+        ( East, 3 ) ->
+            ( 1, 1 )
 
-        ( R270, 4 ) ->
-            ( 0, 2 )
+        ( East, 4 ) ->
+            ( 0, -2 )
 
-        ( R270, 5 ) ->
-            ( 1, 2 )
+        ( East, 5 ) ->
+            ( 1, -2 )
 
-        ( R90, 2 ) ->
+        ( West, 2 ) ->
             ( -1, 0 )
 
-        ( R90, 3 ) ->
-            ( -1, -1 )
+        ( West, 3 ) ->
+            ( -1, 1 )
 
-        ( R90, 4 ) ->
-            ( 0, 2 )
+        ( West, 4 ) ->
+            ( 0, -2 )
 
-        ( R90, 5 ) ->
-            ( -1, 2 )
+        ( West, 5 ) ->
+            ( -1, -2 )
 
         ( _, _ ) ->
             ( 0, 0 )
 
 
 offsetI : OffsetTable
-offsetI rotation n =
-    case ( rotation, n ) of
-        ( R0, 2 ) ->
+offsetI orientation n =
+    case ( orientation, n ) of
+        ( North, 2 ) ->
             ( -1, 0 )
 
-        ( R0, 3 ) ->
+        ( North, 3 ) ->
             ( 2, 0 )
 
-        ( R0, 4 ) ->
+        ( North, 4 ) ->
             ( -1, 0 )
 
-        ( R0, 5 ) ->
+        ( North, 5 ) ->
             ( 2, 0 )
 
-        ( R0, _ ) ->
+        ( North, _ ) ->
             ( 0, 0 )
 
-        ( R270, 2 ) ->
+        ( East, 2 ) ->
             ( 0, 0 )
 
-        ( R270, 3 ) ->
+        ( East, 3 ) ->
             ( 0, 0 )
 
-        ( R270, 4 ) ->
-            ( 0, 1 )
-
-        ( R270, 5 ) ->
-            ( 0, -2 )
-
-        ( R270, _ ) ->
-            ( -1, 0 )
-
-        ( R180, 2 ) ->
-            ( 1, 1 )
-
-        ( R180, 3 ) ->
-            ( -2, 1 )
-
-        ( R180, 4 ) ->
-            ( 1, 0 )
-
-        ( R180, 5 ) ->
-            ( -2, 0 )
-
-        ( R180, _ ) ->
-            ( -1, 1 )
-
-        ( R90, 2 ) ->
-            ( 0, 1 )
-
-        ( R90, 3 ) ->
-            ( 0, 1 )
-
-        ( R90, 4 ) ->
+        ( East, 4 ) ->
             ( 0, -1 )
 
-        ( R90, 5 ) ->
-            ( 0, 2 )
+        ( East, 5 ) ->
+            ( 0, -2 )
 
-        ( R90, _ ) ->
+        ( East, _ ) ->
+            ( -1, 0 )
+
+        ( South, 2 ) ->
+            ( 1, -1 )
+
+        ( South, 3 ) ->
+            ( -2, -1 )
+
+        ( South, 4 ) ->
+            ( 1, 0 )
+
+        ( South, 5 ) ->
+            ( -2, 0 )
+
+        ( South, _ ) ->
+            ( -1, -1 )
+
+        ( West, 2 ) ->
+            ( 0, -1 )
+
+        ( West, 3 ) ->
+            ( 0, -1 )
+
+        ( West, 4 ) ->
             ( 0, 1 )
+
+        ( West, 5 ) ->
+            ( 0, -2 )
+
+        ( West, _ ) ->
+            ( 0, -1 )
 
 
 offsetO : OffsetTable
-offsetO rotation _ =
-    case rotation of
-        R0 ->
+offsetO orientation _ =
+    case orientation of
+        North ->
             ( 0, 0 )
 
-        R270 ->
-            ( 0, -1 )
+        East ->
+            ( 0, 1 )
 
-        R180 ->
-            ( -1, -1 )
+        South ->
+            ( -1, 1 )
 
-        R90 ->
+        West ->
             ( -1, 0 )
 
 
@@ -231,7 +280,8 @@ minos : Tetromino -> List ( Int, Int )
 minos tetromino =
     tetromino.letter
         |> minosRelative
-        |> List.map (shift ( A.current tetromino.x, A.current tetromino.y ))
+        |> List.map (rotate tetromino.orientation)
+        |> List.map (shift ( .position <| A.current tetromino.x, A.current tetromino.y ))
 
 
 minosRelative : Letter -> List ( Int, Int )
@@ -259,20 +309,20 @@ minosRelative letter =
             [ ( -1, -1 ), ( 0, -1 ), ( 0, 0 ), ( 1, 0 ) ]
 
 
-rotate : Rotation -> ( Int, Int ) -> ( Int, Int )
-rotate rotation ( offx, offy ) =
-    case rotation of
-        R0 ->
-            ( offx, offy )
+rotate : Orientation -> ( Int, Int ) -> ( Int, Int )
+rotate orientation ( x, y ) =
+    case orientation of
+        North ->
+            ( x, y )
 
-        R90 ->
-            ( -offy, offx )
+        East ->
+            ( -y, x )
 
-        R180 ->
-            ( -offx, -offy )
+        South ->
+            ( -x, -y )
 
-        R270 ->
-            ( offy, -offx )
+        West ->
+            ( y, -x )
 
 
 shift : ( Int, Int ) -> ( Int, Int ) -> ( Int, Int )
@@ -280,67 +330,42 @@ shift ( x, y ) ( offx, offy ) =
     ( x + offx, y + offy )
 
 
-cw : Rotation -> Rotation
-cw rotation =
-    case rotation of
-        R0 ->
-            R270
-
-        R90 ->
-            R0
-
-        R180 ->
-            R90
-
-        R270 ->
-            R180
-
-
-ccw : Rotation -> Rotation
-ccw rotation =
-    case rotation of
-        R0 ->
-            R90
-
-        R90 ->
-            R180
-
-        R180 ->
-            R270
-
-        R270 ->
-            R0
-
-
-color : Letter -> Color
-color letter =
-    case letter of
-        Z ->
-            Styles.zColor
-
-        L ->
-            Styles.lColor
-
-        O ->
-            Styles.oColor
-
-        S ->
-            Styles.sColor
-
-        I ->
-            Styles.iColor
-
-        J ->
-            Styles.jColor
-
-        T ->
-            Styles.tColor
-
-
 drawMino : Letter -> Drawing msg
 drawMino letter =
-    Draw.rect (-1 / 2) (-1 / 2) 1 1
-        |> Draw.fill (color letter)
+    let
+        size =
+            16
+
+        x =
+            case letter of
+                Letter.I ->
+                    0
+
+                Letter.Z ->
+                    1
+
+                Letter.S ->
+                    2
+
+                Letter.T ->
+                    3
+
+                Letter.O ->
+                    4
+
+                Letter.J ->
+                    5
+
+                Letter.L ->
+                    6
+    in
+    Draw.image "./res/minos.png"
+        |> Draw.clip { x = x * size, y = 0, w = size, h = size }
+
+
+
+-- Draw.rect (-1 / 2) (-1 / 2) 1 1
+--     |> Draw.fill (Letter.color letter)
 
 
 draw : Tetromino -> Drawing msg
@@ -350,6 +375,5 @@ draw tetromino =
             (\( mx, my ) ->
                 drawMino tetromino.letter
                     |> Draw.shift (toFloat mx) (toFloat my)
-                    |> Draw.shift (toFloat <| A.current tetromino.x) (toFloat <| A.current tetromino.y)
             )
         |> Draw.flatten

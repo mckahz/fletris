@@ -8,8 +8,21 @@
     <body>
         <script src="build/main.js"></script>
         <div id="elm"></div>
-        <script>
-            var app = Elm.Main.init({ node: document.getElementById("elm") });
-        </script>
     </body>
+    <script>
+        sessionStorage.clear();
+        var latestTurn = 0;
+
+        var storedSettings = localStorage.getItem("settings");
+        var flags = storedSettings ? JSON.parse(storedSettings) : null;
+
+        var app = Elm.Main.init({
+            node: document.getElementById("elm"),
+            flags: flags,
+        });
+
+        app.ports.saveSettings.subscribe(function (saveData) {
+            localStorage.setItem("settings", JSON.stringify(saveData));
+        });
+    </script>
 </html>
