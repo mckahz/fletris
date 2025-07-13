@@ -1,5 +1,5 @@
 {
-  "devDependencies": {
-    "elm-watch": "^1.2.2"
+  "dependencies": {
+    "elm-live": "^4.0.2"
   }
 }

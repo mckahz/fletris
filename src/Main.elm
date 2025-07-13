@@ -1,36 +1,45 @@
-module Main exposing (main)
+port module Main exposing (main)
 
 import Browser
 import Browser.Dom as Dom
 import Browser.Events as Events
+import Browser.Navigation
 import Controller exposing (Button(..), Controller)
-import Dict
-import Element as E exposing (Element)
-import Element.Background as Background
-import Element.Border as Border
-import Element.Font as Font
-import Element.Input as Input
+import Dict exposing (Dict)
 import Game exposing (Game)
+import Html
+import Html.Attributes as Attr
+import Html.Events
+import Html.Keyed
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Random
-import Random.List
+import Render
+import Resources exposing (Resources)
 import Settings exposing (Settings)
-import Styles
 import Task
 import Tetromino exposing (Tetromino)
 import Tetromino.Letter as Letter exposing (Letter(..))
 import Tetromino.Orientation as Orientation exposing (Orientation(..))
 import Time
+import Url exposing (Url)
 import Util
 
 
+port logger : Encode.Value -> Cmd msg
+
+
+port render : Encode.Value -> Cmd msg
+
+
 main =
-    Browser.document
+    Browser.application
         { init = init
         , view = view
         , update = update
         , subscriptions = subscriptions
+        , onUrlChange = UrlChanged
+        , onUrlRequest = UrlRequested
         }
 
 
@@ -48,35 +57,50 @@ type Msg
     | KeyUp String
     | Tick Time.Posix
     | ChangedSettings Settings.Msg
-    | PlaygroundPressed
-    | GameStarted Random.Seed
+    | UrlChanged Url
+    | UrlRequested Browser.UrlRequest
     | Noop
 
 
 type alias Model =
     { controller : Controller
     , settings : Settings
-    , game : Maybe Game
+    , game : Game
     , history : List Game
     , future : List Game
     }
 
 
-init : Decode.Value -> ( Model, Cmd Msg )
-init settingsValue =
-    let
-        settings =
-            Decode.decodeValue Settings.decoder settingsValue
-                |> Result.withDefault Settings.default
-    in
-    ( { controller = Controller.default
-      , settings = settings
-      , game = Nothing
-      , history = []
-      , future = []
-      }
-    , Random.generate GameStarted Random.independentSeed
-    )
+type alias Flags =
+    { settings : Settings, resources : Resources, seed : Random.Seed }
+
+
+flagDecoder : Decode.Decoder Flags
+flagDecoder =
+    Decode.map3 Flags
+        (Decode.field "settings" Settings.decoder)
+        (Decode.field "resources" Resources.decoder)
+        (Decode.field "seed" Decode.int |> Decode.map Random.initialSeed)
+
+
+init : Decode.Value -> Url -> Browser.Navigation.Key -> ( Model, Cmd msg )
+init flags _ _ =
+    case Decode.decodeValue flagDecoder flags of
+        Err error ->
+            error
+                |> Decode.errorToString
+                |> Debug.log "error loading flags"
+                |> Debug.todo ""
+
+        Ok { settings, resources, seed } ->
+            ( { controller = Controller.default
+              , settings = settings
+              , game = Game.init seed resources
+              , history = []
+              , future = []
+              }
+            , Cmd.none
+            )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -85,54 +109,31 @@ update msg model =
         Noop ->
             ( model, Cmd.none )
 
-        GameStarted seed ->
-            let
-                game =
-                    Game.init seed
-            in
-            ( respondToMsg game Game.SaveGameState model, Cmd.none )
+        UrlChanged _ ->
+            ( model, Cmd.none )
 
-        PlaygroundPressed ->
-            ( model, Random.generate GameStarted Random.independentSeed )
+        UrlRequested _ ->
+            ( model, Cmd.none )
 
         ChangedSettings settingsMsg ->
             let
                 ( settings, cmd ) =
                     Settings.update settingsMsg model.settings
-
-                buttonToBlur =
-                    case settingsMsg of
-                        Settings.SetAll ->
-                            "set-all-button"
-
-                        Settings.ClearAll ->
-                            "clear-all-button"
-
-                        Settings.ResetDefault ->
-                            "reset-default-button"
-
-                        Settings.Minimized ->
-                            "minimize-settings-button"
-
-                        Settings.SavedSettings ->
-                            "save-settings-button"
-
-                        _ ->
-                            ""
             in
-            ( { model | settings = settings }
-            , Cmd.batch
-                [ Task.attempt (\_ -> Noop) (Dom.blur buttonToBlur)
-                , cmd
-                ]
-            )
+            ( { model | settings = settings }, cmd )
 
         Tick time ->
-            ( model.game
-                |> Maybe.map (Game.tick time model.settings model.controller)
-                |> Maybe.map (\( g, m ) -> respondToMsg g m model)
-                |> Maybe.withDefault model
-            , Cmd.none
+            let
+                newModel =
+                    model.game
+                        |> Game.tick time model.settings model.controller
+                        |> (\( g, m ) -> respondToCmd g m model)
+
+                commands =
+                    Game.view newModel.game
+            in
+            ( newModel
+            , render <| Encode.list Render.encodeCommand commands
             )
 
         KeyDown key ->
@@ -148,17 +149,11 @@ update msg model =
                     let
                         controller =
                             Controller.press button model.controller
-                    in
-                    case model.game of
-                        Nothing ->
-                            model
 
-                        Just game ->
-                            let
-                                ( g, m ) =
-                                    Game.onPress button model.settings game
-                            in
-                            respondToMsg g m { model | controller = controller }
+                        ( g, m ) =
+                            Game.onPress button model.settings model.game
+                    in
+                    respondToCmd g m { model | controller = controller }
             in
             ( case model.settings.setInputMode of
                 Settings.Setting button ->
@@ -191,17 +186,11 @@ update msg model =
                     let
                         controller =
                             Controller.release button model.controller
-                    in
-                    case model.game of
-                        Nothing ->
-                            model
 
-                        Just game ->
-                            let
-                                ( g, m ) =
-                                    ( Game.onRelease button controller model.settings game, Game.Noop )
-                            in
-                            respondToMsg g m { model | controller = controller }
+                        ( g, m ) =
+                            ( Game.onRelease button controller model.settings model.game, Game.NoCmd )
+                    in
+                    respondToCmd g m { model | controller = controller }
             in
             ( model.settings.controls
                 |> Dict.get key
@@ -212,17 +201,17 @@ update msg model =
             )
 
 
-respondToMsg : Game -> Game.Msg -> Model -> Model
-respondToMsg game msg model =
-    case msg of
-        Game.Noop ->
-            { model | game = Just game }
+respondToCmd : Game -> Game.Cmd -> Model -> Model
+respondToCmd game cmd model =
+    case cmd of
+        Game.NoCmd ->
+            { model | game = game }
 
         Game.Undo ->
             case model.history of
                 current :: prev :: before ->
                     { model
-                        | game = Just prev
+                        | game = prev
                         , history = prev :: before
                         , future = current :: model.future
                     }
@@ -235,7 +224,7 @@ respondToMsg game msg model =
             case model.future of
                 next :: after ->
                     { model
-                        | game = Just next
+                        | game = next
                         , history = next :: model.history
                         , future = after
                     }
@@ -248,40 +237,25 @@ respondToMsg game msg model =
             { model
                 | history = List.take 150 <| game :: model.history
                 , future = []
-                , game = Just game
+                , game = game
             }
 
 
 view : Model -> Browser.Document Msg
 view model =
-    { title = "tetris.elm"
+    { title = "fletris"
     , body =
-        [ E.layout
-            [ Background.color Styles.backgroundColor
-            , Font.color Styles.fontColor
-            , Font.family
-                [ Font.monospace
-                ]
-            , Font.bold
-            , E.inFront (E.map ChangedSettings <| Settings.view model.settings)
-            ]
-          <|
-            case model.game of
-                Nothing ->
-                    viewMainMenu model
+        let
+            scale =
+                2
+        in
+        [ Html.canvas [ Attr.width (scale * Game.screenWidth), Attr.height (scale * Game.screenHeight), Attr.id "game", Attr.style "display" "none" ] []
+        , Html.canvas [ Attr.width (scale * Game.screenWidth), Attr.height (scale * Game.screenHeight), Attr.id "downscaled-game" ] []
 
-                Just game ->
-                    Game.view game
+        -- HACK: here to render palettes to so we can read their image data
+        , Html.canvas [ Attr.width 16, Attr.height 16, Attr.id "palette", Attr.style "display" "none" ] []
+
+        -- HACK: here to render minos so we can palette swap them before upscaling
+        , Html.canvas [ Attr.width 16, Attr.height 16, Attr.id "palette-swapping-buffer", Attr.style "display" "none" ] []
         ]
     }
-
-
-viewMainMenu : Model -> Element Msg
-viewMainMenu model =
-    E.column [ E.centerX, E.centerY ]
-        [ E.el [ E.centerX ] <| E.text "FLETRIS"
-        , Input.button [ E.centerX ] { onPress = Just PlaygroundPressed, label = E.text "PLAYGROUND" }
-        , Input.button [ E.centerX ] { onPress = Nothing, label = E.text "MARATHON" }
-        , Input.button [ E.centerX ] { onPress = Nothing, label = E.text "LOCAL MULTIPLAYER" }
-        , Input.button [ E.centerX ] { onPress = Nothing, label = E.text "SETTINGS" }
-        ]

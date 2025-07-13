@@ -1,17 +1,19 @@
 module Tetromino.Letter exposing
     ( Letter(..)
+    , all
     , color
     , decode
     , encode
     , generator
+    , toInt
     , toString
     )
 
-import Element exposing (Color)
+import Color exposing (Color)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Random
-import Styles
+import Util exposing (hex)
 
 
 type Letter
@@ -24,35 +26,51 @@ type Letter
     | T
 
 
+all : List Letter
+all =
+    [ I
+    , L
+    , J
+    , S
+    , Z
+    , O
+    , T
+    ]
+
+
 generator : Random.Generator Letter
 generator =
     Random.uniform I [ J, L, S, Z, T, O ]
 
 
+toInt : Letter -> Int
+toInt letter =
+    case letter of
+        I ->
+            0
+
+        L ->
+            1
+
+        J ->
+            2
+
+        S ->
+            3
+
+        Z ->
+            4
+
+        O ->
+            5
+
+        T ->
+            6
+
+
 encode : Letter -> Encode.Value
-encode letter =
-    Encode.int <|
-        case letter of
-            I ->
-                0
-
-            L ->
-                1
-
-            J ->
-                2
-
-            S ->
-                3
-
-            Z ->
-                4
-
-            O ->
-                5
-
-            T ->
-                6
+encode =
+    Encode.int << toInt
 
 
 decode : Decode.Decoder Letter
@@ -113,22 +131,22 @@ color : Letter -> Color
 color letter =
     case letter of
         Z ->
-            Styles.zColor
+            hex 0xED6E6F00
 
         L ->
-            Styles.lColor
+            hex 0xE74AE800
 
         O ->
-            Styles.oColor
+            hex 0xF6CB5700
 
         S ->
-            Styles.sColor
+            hex 0x7CFC9C00
 
         I ->
-            Styles.iColor
+            hex 0x98FCF800
 
         J ->
-            Styles.jColor
+            hex 0x4646F500
 
         T ->
-            Styles.tColor
+            hex 0x9740C300

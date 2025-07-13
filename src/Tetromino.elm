@@ -7,8 +7,6 @@ module Tetromino exposing
     , dasEvents
     , decode
     , dirToInt
-    , draw
-    , drawMino
     , encode
     , getX
     , getY
@@ -21,7 +19,6 @@ module Tetromino exposing
     )
 
 import Animate as A exposing (Timeline)
-import Draw exposing (Drawing)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Settings
@@ -328,52 +325,3 @@ rotate orientation ( x, y ) =
 shift : ( Int, Int ) -> ( Int, Int ) -> ( Int, Int )
 shift ( x, y ) ( offx, offy ) =
     ( x + offx, y + offy )
-
-
-drawMino : Letter -> Drawing msg
-drawMino letter =
-    let
-        size =
-            16
-
-        x =
-            case letter of
-                Letter.I ->
-                    0
-
-                Letter.Z ->
-                    1
-
-                Letter.S ->
-                    2
-
-                Letter.T ->
-                    3
-
-                Letter.O ->
-                    4
-
-                Letter.J ->
-                    5
-
-                Letter.L ->
-                    6
-    in
-    Draw.image "./res/minos.png"
-        |> Draw.clip { x = x * size, y = 0, w = size, h = size }
-
-
-
--- Draw.rect (-1 / 2) (-1 / 2) 1 1
---     |> Draw.fill (Letter.color letter)
-
-
-draw : Tetromino -> Drawing msg
-draw tetromino =
-    minos tetromino
-        |> List.map
-            (\( mx, my ) ->
-                drawMino tetromino.letter
-                    |> Draw.shift (toFloat mx) (toFloat my)
-            )
-        |> Draw.flatten

@@ -29,6 +29,10 @@ type Cell
     | Mino Letter
 
 
+
+-- TODO: Make board a record like {ts = [(0, 0)], ls, is....} so we can batch palette swaps when rendering
+
+
 type Board
     = Board (Array Cell)
 
@@ -131,7 +135,7 @@ spawnX =
 
 spawnY : Int
 spawnY =
-    -1
+    1
 
 
 spawn : Letter -> Tetromino

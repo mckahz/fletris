@@ -2,27 +2,203 @@
 <html>
     <head>
         <meta charset="UTF-8" />
-        <title>Main</title>
+        <link rel="stylesheet" href="style.css" />
     </head>
 
     <body>
-        <script src="build/main.js"></script>
         <div id="elm"></div>
+        <script src="build/main.js"></script>
+        <script>
+            const init = (resources) => {
+                const storedSettings = localStorage.getItem("settings");
+
+                const flags = {
+                    settings: storedSettings
+                        ? JSON.parse(storedSettings)
+                        : null,
+                    resources: resources,
+                    seed: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
+                };
+
+                var app = Elm.Main.init({
+                    node: document.getElementById("elm"),
+                    flags: flags,
+                });
+
+                app.ports.render.subscribe((commands) => {
+                    const scale = 2;
+                    const canvas = document.getElementById("game");
+                    const ctx = canvas.getContext("2d");
+                    var palette = null;
+
+                    ctx.imageSmoothingEnabled = false;
+
+                    ctx.fillStyle = "#000000";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                    for (command of commands) {
+                        if (command.fn == "drawImage") {
+                            if (!palette) {
+                                ctx.drawImage(
+                                    command.image,
+                                    scale * command.x,
+                                    scale * command.y,
+                                    scale * command.image.width,
+                                    scale * command.image.height,
+                                );
+                                continue;
+                            }
+
+                            // palette
+                            const paletteCtx = document
+                                .getElementById("palette")
+                                .getContext("2d");
+                            paletteCtx.drawImage(palette.image, 0, 0);
+                            const paletteData = paletteCtx.getImageData(
+                                0,
+                                0,
+                                palette.image.width,
+                                palette.image.height,
+                            ).data;
+
+                            // palette swapping back bufffer
+                            const paletteSwapCanvas = document.getElementById(
+                                "palette-swapping-buffer",
+                            );
+                            const paletteSwapCtx =
+                                paletteSwapCanvas.getContext("2d");
+                            paletteSwapCtx.drawImage(command.image, 0, 0);
+
+                            // our image
+                            const image = command.image;
+                            const imageData = paletteSwapCtx.getImageData(
+                                0,
+                                0,
+                                image.width,
+                                image.height,
+                            );
+
+                            for (var x = 0; x < image.width; x += 1) {
+                                for (var y = 0; y < image.height; y += 1) {
+                                    let i = (y * image.width + x) * 4;
+                                    const srcColor = imageData.data.slice(
+                                        i,
+                                        i + 4,
+                                    );
+                                    var n = 0;
+                                    for (
+                                        ;
+                                        n + 1 < palette.image.width;
+                                        n += 1
+                                    ) {
+                                        i = n * 4;
+                                        const nthColor = paletteData.slice(
+                                            i,
+                                            i + 4,
+                                        );
+                                        const same =
+                                            nthColor[0] == srcColor[0] &&
+                                            nthColor[1] == srcColor[1] &&
+                                            nthColor[2] == srcColor[2] &&
+                                            nthColor[3] == srcColor[3];
+                                        if (same) {
+                                            break;
+                                        }
+                                    }
+                                    i =
+                                        (palette.n * palette.image.width + n) *
+                                        4;
+                                    const destColor = paletteData.slice(
+                                        i,
+                                        i + 4,
+                                    );
+                                    i = (y * image.width + x) * 4;
+                                    imageData.data[i] = destColor[0];
+                                    imageData.data[i + 1] = destColor[1];
+                                    imageData.data[i + 2] = destColor[2];
+                                    imageData.data[i + 3] = destColor[3];
+                                }
+                                paletteSwapCtx.putImageData(imageData, 0, 0);
+                                ctx.drawImage(
+                                    paletteSwapCanvas,
+                                    scale * command.x,
+                                    scale * command.y,
+                                    scale * image.width,
+                                    scale * image.height,
+                                );
+                            }
+                        } else if (command.fn == "setPalette") {
+                            palette = { image: command.image, n: command.n };
+                        } else if (command.fn == "resetPalette") {
+                            palette = null;
+                        } else {
+                            console.error("unrecognised command ", command.fn);
+                        }
+                    }
+
+                    // now to downscale with bilinear filtering
+                    const downscaledCanvas =
+                        document.getElementById("downscaled-game");
+                    const downscaledCtx = downscaledCanvas.getContext("2d");
+                    downscaledCtx.clearRect(
+                        0,
+                        0,
+                        downscaledCanvas.width,
+                        downscaledCanvas.height,
+                    );
+                    const maxWidth = window.innerWidth;
+                    const maxHeight = window.innerHeight;
+                    const downscale = Math.min(
+                        maxWidth / canvas.width,
+                        maxHeight / canvas.height,
+                    );
+                    const width = canvas.width * downscale;
+                    const height = canvas.height * downscale;
+                    downscaledCtx.drawImage(
+                        canvas,
+                        0,
+                        0,
+                        canvas.width,
+                        canvas.height,
+                        (maxWidth - width) / 2,
+                        (maxHeight - height) / 2,
+                        width,
+                        height,
+                    );
+                });
+
+                app.ports.saveSettings.subscribe((saveData) => {
+                    localStorage.setItem("settings", JSON.stringify(saveData));
+                });
+            };
+
+            const loadResources = (pairs, callback) => {
+                var images = [];
+                var unloaded = pairs.length;
+                for (let [name, path] of pairs) {
+                    const img = new Image();
+                    images[name] = img;
+                    img.addEventListener("load", () => {
+                        unloaded -= 1;
+                        if (unloaded == 0) {
+                            callback(images);
+                        }
+                    });
+                    img.src = path;
+                }
+            };
+
+            loadResources(
+                [
+                    ["mino", "res/images/mino.bmp"],
+                    ["palette", "res/images/palette.bmp"],
+                    ["vines", "res/images/vines.png"],
+                    ["text", "res/images/text.png"],
+                    ["decor", "res/images/decor.png"],
+                    ["grid", "res/images/grid.png"],
+                ],
+                init,
+            );
+        </script>
     </body>
-    <script>
-        sessionStorage.clear();
-        var latestTurn = 0;
-
-        var storedSettings = localStorage.getItem("settings");
-        var flags = storedSettings ? JSON.parse(storedSettings) : null;
-
-        var app = Elm.Main.init({
-            node: document.getElementById("elm"),
-            flags: flags,
-        });
-
-        app.ports.saveSettings.subscribe(function (saveData) {
-            localStorage.setItem("settings", JSON.stringify(saveData));
-        });
-    </script>
 </html>

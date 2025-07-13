@@ -1,6 +1,17 @@
-module Util exposing (chunksOf, flip, sign, toHexString)
+module Util exposing (chunksOf, flip, hex, sign)
 
-import Element exposing (Color, toRgb)
+import Bitwise exposing (shiftLeftBy, shiftRightBy)
+import Color exposing (Color)
+
+
+hex : Int -> Color
+hex x =
+    Color.fromRgba
+        { red = toFloat (x |> shiftLeftBy 0 |> shiftRightBy 6) / 256
+        , green = toFloat (x |> shiftLeftBy 0 |> shiftRightBy 6) / 256
+        , blue = toFloat (x |> shiftLeftBy 0 |> shiftRightBy 6) / 256
+        , alpha = toFloat (x |> shiftLeftBy 0 |> shiftRightBy 6) / 256
+        }
 
 
 flip : (b -> a -> c) -> a -> b -> c
@@ -18,57 +29,6 @@ sign x =
 
     else
         -1
-
-
-toHexString : Color -> String
-toHexString color =
-    let
-        truncate str =
-            String.dropLeft (max 0 (String.length str - 2)) str
-
-        intToHex dec =
-            case dec of
-                15 ->
-                    "F"
-
-                14 ->
-                    "E"
-
-                13 ->
-                    "D"
-
-                12 ->
-                    "C"
-
-                11 ->
-                    "B"
-
-                10 ->
-                    "A"
-
-                _ ->
-                    if dec >= 16 then
-                        truncate (intToHex (dec // 16) ++ intToHex (dec |> modBy 16))
-
-                    else
-                        String.fromInt dec
-
-        { red, green, blue, alpha } =
-            toRgb color
-
-        ired =
-            floor <| 255 * red
-
-        igreen =
-            floor <| 255 * green
-
-        iblue =
-            floor <| 255 * blue
-
-        ialpha =
-            floor <| 255 * alpha
-    in
-    "#" ++ intToHex ired ++ intToHex igreen ++ intToHex iblue
 
 
 chunksOf : Int -> List a -> List (List a)

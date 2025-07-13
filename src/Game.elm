@@ -1,37 +1,46 @@
 module Game exposing
-    ( Game
-    , Msg(..)
+    ( Cmd(..)
+    , Game
     , init
     , onPress
     , onRelease
+    , screenHeight
+    , screenWidth
     , tick
+    , update
     , view
     )
 
 import Animate as A
 import Board exposing (Board, width)
 import Controller exposing (Button(..), Controller)
-import Draw exposing (Drawing)
-import Element as E exposing (Element)
-import Element.Background as Background
-import Element.Border as Border
+import Dict exposing (Dict)
+import Html exposing (Html)
+import Html.Attributes as Attr
 import List.Extra as List
 import Random
 import Random.List
+import Render
+import Resources exposing (Resources)
 import Settings exposing (Settings)
-import Styles
 import Tetromino exposing (Tetromino)
 import Tetromino.Letter as Letter exposing (Letter(..))
 import Tetromino.Orientation as Orientation exposing (Orientation(..))
+import Texture exposing (Texture)
 import Time
 import Util
 
 
-type Msg
+type Cmd
     = Undo
     | Redo
     | SaveGameState
-    | Noop
+    | NoCmd
+
+
+type Msg
+    = TextureLoaded Texture
+    | NoMsg
 
 
 type LineClear
@@ -61,6 +70,7 @@ type alias Game =
     , finesseFaults : Int
     , movements : Int
     , turn : Int
+    , res : Resources
     }
 
 
@@ -69,8 +79,8 @@ bagGenerator =
     Random.List.shuffle [ I, T, O, J, L, S, Z ]
 
 
-init : Random.Seed -> Game
-init s0 =
+init : Random.Seed -> Resources -> Game
+init s0 res =
     let
         ( bag, s1 ) =
             Random.step bagGenerator s0
@@ -97,339 +107,326 @@ init s0 =
     , finesseFaults = 0
     , popupMessage = ""
     , turn = 1
+    , res = res
     }
 
 
-renderScaled : Float -> Float -> Float -> Float -> List (E.Attribute msg) -> Drawing msg -> Element msg
-renderScaled x y w h attrs drawing =
-    let
-        unit =
-            Styles.minoSize
-
-        sx =
-            x * unit
-
-        sy =
-            y * unit
-
-        sw =
-            w * unit
-
-        sh =
-            h * unit
-    in
-    drawing
-        |> Draw.scale unit unit
-        |> Draw.render sx sy sw sh attrs
+screenWidth =
+    767
 
 
-view : Game -> Element msg
+screenHeight =
+    395
+
+
+view : Game -> List Render.Command
 view game =
     let
-        margin =
-            0.1
+        gridSize =
+            16
 
-        getCell : Int -> Maybe (Drawing msg)
-        getCell i =
-            let
-                ( x, y ) =
-                    ( i |> modBy Board.width, i // Board.width )
-            in
-            case Board.get x y game.board of
-                Board.Empty ->
-                    Draw.rect { x = -0.5, y = -0.5, w = 1, h = 1 }
-                        |> Draw.shift (toFloat x) (toFloat y)
-                        |> Draw.fill Styles.boardColor
-                        |> Draw.stroke Styles.gridColor
-                        |> Draw.strokeWidth (Styles.gridWidth / 2)
-                        |> Just
+        boardOrigin =
+            { x = 133, y = 0 }
 
-                Board.Junk ->
-                    Nothing
-
-                Board.Mino letter ->
-                    Tetromino.drawMino letter
-                        |> Draw.shift (toFloat x) (toFloat y)
-                        |> Draw.fill (Letter.color letter)
-                        |> Just
-
-        ghost =
-            game.tetromino
-                |> Tetromino.minos
-                |> List.map
-                    (\( mx, my ) ->
-                        Draw.rect { x = -0.5, y = -0.5, w = 1, h = 1 }
-                            |> Draw.shift (toFloat mx) (toFloat my)
-                            |> Draw.fill Styles.ghostColor
-                    )
-                |> Draw.flatten
-                |> Draw.shift 0 -(toFloat <| A.current game.tetromino.y - ghostY game.board game.tetromino)
-
-        boardDrawing =
+        board =
             List.range 0 (Board.width * Board.height - 1)
-                |> List.filterMap getCell
-                |> Draw.flatten
-                |> Draw.behind ghost
-                |> Draw.behind (Tetromino.draw game.tetromino)
+                |> List.concatMap
+                    (\i ->
+                        let
+                            ( x, y ) =
+                                ( i |> modBy Board.width, i // Board.width )
+                        in
+                        case Board.get x y game.board of
+                            Board.Mino letter ->
+                                [ Render.setPalette game.res.palette (Letter.toInt letter)
+                                , Render.drawTexture (toFloat <| gridSize * x + boardOrigin.x) (toFloat <| gridSize * y + boardOrigin.y) game.res.mino
+                                ]
 
-        leftColumn =
-            E.column [ Styles.defaultSpacing, E.height E.fill ]
-                [ viewHold game
-                , viewSpin game.spin
-                , Maybe.withDefault E.none <| Maybe.map viewLineClear game.lineClear
-                , viewCombo game.combo
+                            Board.Empty ->
+                                []
+
+                            Board.Junk ->
+                                []
+                    )
+
+        drawTetromino : Tetromino -> Float -> Float -> List Render.Command
+        drawTetromino tetromino offx offy =
+            List.concat
+                [ [ Render.setPalette game.res.palette (Letter.toInt tetromino.letter) ]
+                , tetromino
+                    |> Tetromino.minos
+                    |> List.map
+                        (\( x, y ) ->
+                            Render.drawTexture
+                                (toFloat (gridSize * x) + offx)
+                                (toFloat (gridSize * y) + offy)
+                                game.res.mino
+                        )
+                , [ Render.resetPalette ]
                 ]
 
-        aboveBoard =
-            renderScaled
-                (-0.5 - margin)
-                (-2.5 - 3 * margin)
-                (toFloat Board.width + 2 * margin)
-                (2 + 2 * margin)
-                [ E.centerX, E.centerY ]
-                boardDrawing
+        drawCenteredTetromino tetromino offx offy =
+            let
+                ioOffset =
+                    if tetromino.letter == Letter.I || tetromino.letter == Letter.O then
+                        -gridSize // 2
 
-        rightColumn =
-            E.row []
-                [ viewNext game
-                , E.el [ E.alignTop ] <| viewStats game
-                ]
-    in
-    renderScaled
-        (-0.5 - margin)
-        (-0.5 - margin)
-        (toFloat Board.width + 2 * margin)
-        (toFloat Board.height + 2 * margin)
-        [ E.alignTop
-        , Background.color Styles.boardColor
-        , E.onLeft leftColumn
-        , E.above aboveBoard
-        , E.inFront
-            (E.el [ E.centerX, E.centerY ] <| E.text game.popupMessage)
-        , E.onRight rightColumn
-        , E.centerX
-        , E.centerY
-        , Border.color Styles.highlightColor
-        , Border.roundEach
-            { topLeft = 0
-            , topRight = 0
-            , bottomLeft = Styles.borderRadiusPx
-            , bottomRight = Styles.borderRadiusPx
-            }
-        , Border.widthEach
-            { bottom = Styles.borderWidthPx
-            , left = Styles.borderWidthPx
-            , right = Styles.borderWidthPx
-            , top = 0
-            }
-        ]
-        boardDrawing
+                    else
+                        0
 
+                iOffset =
+                    if tetromino.letter == Letter.I then
+                        -gridSize // 2
 
-standaloneTetromino : List (E.Attribute msg) -> Maybe Letter -> Element msg
-standaloneTetromino attrs letter =
-    let
-        offx =
-            case letter of
-                Just O ->
-                    -1
+                    else
+                        0
+            in
+            drawTetromino tetromino (offx + toFloat ioOffset) (offy + toFloat iOffset)
 
-                _ ->
-                    0
+        fg =
+            [ Render.drawTexture 0 0 game.res.vines ]
 
-        offy =
-            case letter of
-                Just I ->
-                    0
-
-                _ ->
-                    1
-
-        width =
-            4
-
-        height =
-            2
-
-        padding =
-            0.5
-
-        drawing =
-            case letter of
-                Just l ->
-                    Tetromino.draw { letter = l, x = A.init { position = 0, motion = Nothing }, y = A.init 0, orientation = North }
-
-                Nothing ->
-                    Draw.empty
-    in
-    renderScaled
-        -(offx + 1.5 + padding)
-        -(offy
-            + (if letter == Just I then
-                1
-
-               else
-                0.5
-              )
-            + padding
-         )
-        (width + 2 * padding)
-        (height + 2 * padding)
-        attrs
-        drawing
-
-
-viewLineClear : LineClear -> Element msg
-viewLineClear lineClear =
-    E.text <|
-        case lineClear of
-            Single ->
-                "SINGLE!"
-
-            Double ->
-                "DOUBLE!!"
-
-            Triple ->
-                "TRIPLE!!!"
-
-            Tetris ->
-                "HHHHNGHGNHN"
-
-
-viewCombo : Int -> Element msg
-viewCombo combo =
-    E.text <|
-        if combo >= 2 then
-            "x" ++ String.fromInt combo ++ " COMBO!"
-
-        else
-            ""
-
-
-viewSpin : Maybe ( Spin, Letter ) -> Element msg
-viewSpin field =
-    case field of
-        Just ( Full, letter ) ->
-            E.text <| "full on " ++ Letter.toString letter ++ " spin!"
-
-        Just ( Mini, letter ) ->
-            E.text <| "mini " ++ Letter.toString letter ++ " spin!"
-
-        Nothing ->
-            E.text ""
-
-
-viewStats : Game -> Element msg
-viewStats game =
-    let
-        viewStat ( name, value ) =
-            E.text <| name ++ "\n" ++ value
-    in
-    [ ( "SCORE", String.fromInt game.score )
-    , ( "FINESSE"
-      , let
-            num =
-                game.turn - 1 - game.finesseFaults
-
-            den =
-                game.turn - 1
-
-            ratio =
-                "(" ++ String.fromInt num ++ "/" ++ String.fromInt den ++ ")"
-
-            format n =
-                let
-                    str =
-                        n |> String.fromFloat
-
-                    maxLength =
-                        6
-                in
-                if n == 100 then
-                    "100." ++ String.repeat (maxLength - 3) "0" ++ "%"
-
-                else if str |> String.contains "." then
-                    str
-                        |> String.left maxLength
-                        |> String.padRight maxLength '0'
-                        |> Util.flip String.append "%"
-
-                else
-                    str
-                        |> String.left maxLength
-                        |> Util.flip String.append "."
-                        |> String.padRight maxLength '0'
-                        |> Util.flip String.append "%"
-
-            percent =
-                format (100 * toFloat num / toFloat den)
-        in
-        if den == 0 then
-            ratio ++ " or " ++ format 100
-
-        else
-            ratio ++ " or " ++ percent
-      )
-    , ( "MOVEMENTS", String.fromInt game.movements )
-    ]
-        |> List.map viewStat
-        |> E.column [ E.alignTop ]
-
-
-viewNext : Game -> Element msg
-viewNext game =
-    E.column
-        [ E.alignTop
-        , Border.color Styles.highlightColor
-        , Border.width Styles.borderWidthPx
-        , Border.roundEach
-            { topLeft = 0
-            , topRight = Styles.borderRadiusPx
-            , bottomLeft = 0
-            , bottomRight = Styles.borderRadiusPx
-            }
-        ]
-        [ E.text "NEXT"
-            |> E.el
-                [ Background.color Styles.highlightColor
-                , E.width E.fill
-                , Styles.defaultPadding
-                ]
-        , E.column
-            [ Styles.defaultPadding
-            , Styles.defaultSpacing
-            , E.height <| E.px <| round <| 5 * 2 * 1.8 * Styles.minoSize
+        bg =
+            [ Render.drawTexture 0 0 game.res.decor
+            , Render.drawTexture 0 0 game.res.text
+            , Render.drawTexture 0 0 game.res.grid
             ]
-            (game.queue
-                |> List.take Settings.queueLength
-                |> List.map (standaloneTetromino [] << Just)
-            )
+    in
+    List.concat
+        [ bg
+        , board
+        , drawTetromino game.tetromino boardOrigin.x boardOrigin.y
+        , case game.hold of
+            Nothing ->
+                []
+
+            Just hold ->
+                drawCenteredTetromino { letter = hold, orientation = North, x = A.init { position = 0, motion = Nothing }, y = A.init 0 }
+                    (boardOrigin.x - 55)
+                    (boardOrigin.y + 63)
+        , game.queue
+            |> List.take Settings.queueLength
+            |> List.indexedMap
+                (\i letter ->
+                    drawCenteredTetromino { letter = letter, orientation = North, x = A.init { position = 0, motion = Nothing }, y = A.init 0 }
+                        (toFloat (boardOrigin.x + Board.width * gridSize + 35))
+                        (toFloat (boardOrigin.y + 63 + i * round (2.8 * gridSize)))
+                )
+            |> List.concat
+        , fg
         ]
 
 
-viewHold : Game -> Element msg
-viewHold game =
-    E.column
-        [ E.alignTop
-        , Border.color Styles.highlightColor
-        , Border.width Styles.borderWidthPx
-        , Border.roundEach
-            { topLeft = Styles.borderRadiusPx
-            , topRight = 0
-            , bottomLeft = Styles.borderRadiusPx
-            , bottomRight = 0
-            }
-        , E.width (E.fill |> E.minimum Styles.sidebarWidthPx)
-        ]
-        [ E.text "HOLD"
-            |> E.el
-                [ Background.color Styles.highlightColor
-                , Styles.defaultPadding
-                , E.width E.fill
-                ]
-        , game.hold
-            |> standaloneTetromino []
-        ]
+
+-- standaloneTetromino : Maybe Letter -> Texture
+-- standaloneTetromino letter =
+--     E.none
+-- viewLineClear : LineClear -> Element msg
+-- viewLineClear lineClear =
+--     E.text <|
+--         case lineClear of
+--             Single ->
+--                 "SINGLE!"
+--             Double ->
+--                 "DOUBLE!!"
+--             Triple ->
+--                 "TRIPLE!!!"
+--             Tetris ->
+--                 "HHHHNGHGNHN"
+-- viewCombo : Int -> Element msg
+-- viewCombo combo =
+--     E.text <|
+--         if combo >= 2 then
+--             "x" ++ String.fromInt combo ++ " COMBO!"
+--         else
+--             ""
+-- viewSpin : Maybe ( Spin, Letter ) -> Element msg
+-- viewSpin field =
+--     case field of
+--         Just ( Full, letter ) ->
+--             E.text <| "full on " ++ Letter.toString letter ++ " spin!"
+--         Just ( Mini, letter ) ->
+--             E.text <| "mini " ++ Letter.toString letter ++ " spin!"
+--         Nothing ->
+--             E.text ""
+-- viewStats : Game -> Element msg
+-- viewStats game =
+--     let
+--         viewStat ( name, value ) =
+--             E.text <| name ++ "\n" ++ value
+--     in
+--     [ ( "SCORE", String.fromInt game.score )
+--     , ( "FINESSE"
+--       , let
+--             num =
+--                 game.turn - 1 - game.finesseFaults
+--             den =
+--                 game.turn - 1
+--             ratio =
+--                 "(" ++ String.fromInt num ++ "/" ++ String.fromInt den ++ ")"
+--             format n =
+--                 let
+--                     str =
+--                         n |> String.fromFloat
+--                     maxLength =
+--                         6
+--                 in
+--                 if n == 100 then
+--                     "100." ++ String.repeat (maxLength - 3) "0" ++ "%"
+--                 else if str |> String.contains "." then
+--                     str
+--                         |> String.left maxLength
+--                         |> String.padRight maxLength '0'
+--                         |> Util.flip String.append "%"
+--                 else
+--                     str
+--                         |> String.left maxLength
+--                         |> Util.flip String.append "."
+--                         |> String.padRight maxLength '0'
+--                         |> Util.flip String.append "%"
+--             percent =
+--                 format (100 * toFloat num / toFloat den)
+--         in
+--         if den == 0 then
+--             ratio ++ " or " ++ format 100
+--         else
+--             ratio ++ " or " ++ percent
+--       )
+--     , ( "MOVEMENTS", String.fromInt game.movements )
+--     ]
+--         |> List.map viewStat
+--         |> E.column [ E.alignTop ]
+-- viewNext : Game -> Element msg
+-- viewNext game =
+--     E.column
+--         [ E.alignTop
+--         , Border.color Styles.highlightColor
+--         , Border.width Styles.borderWidthPx
+--         , Border.roundEach
+--             { topLeft = 0
+--             , topRight = Styles.borderRadiusPx
+--             , bottomLeft = 0
+--             , bottomRight = Styles.borderRadiusPx
+--             }
+--         ]
+--         [ E.text "NEXT"
+--             |> E.el
+--                 [ Background.color Styles.highlightColor
+--                 , E.width E.fill
+--                 , Styles.defaultPadding
+--                 ]
+--         , E.column
+--             [ Styles.defaultPadding
+--             , Styles.defaultSpacing
+--             , E.height <| E.px <| round <| 5 * 2 * 1.8 * Styles.minoSize
+--             ]
+--             (game.queue
+--                 |> List.take Settings.queueLength
+--                 |> List.map (standaloneTetromino [] << Just)
+--             )
+--         ]
+-- viewHold : Game -> Surface msg
+-- viewHold game =
+--     E.column
+--         [ E.alignTop
+--         , Border.color Styles.highlightColor
+--         , Border.width Styles.borderWidthPx
+--         , Border.roundEach
+--             { topLeft = Styles.borderRadiusPx
+--             , topRight = 0
+--             , bottomLeft = Styles.borderRadiusPx
+--             , bottomRight = 0
+--             }
+--         , E.width (E.fill |> E.minimum Styles.sidebarWidthPx)
+--         ]
+--         [ E.text "HOLD"
+--             |> E.el
+--                 [ Background.color Styles.highlightColor
+--                 , Styles.defaultPadding
+--                 , E.width E.fill
+--                 ]
+--         , game.hold
+--             |> standaloneTetromino []
+--         ]
+--
+-- viewSettings : Settings -> Surface Settings.Msg
+-- viewSettings settings =
+-- viewControls : Settings -> Element Msg
+-- viewControls settings =
+--     let
+--         width =
+--             Controller.allButtons
+--                 |> List.map
+--                     (\b ->
+--                         [ name b
+--                         , arrowStr
+--                         , keys b
+--                         ]
+--                             |> List.map String.length
+--                             |> List.sum
+--                     )
+--                 |> List.maximum
+--                 |> Maybe.map ((+) 2)
+--                 |> Maybe.map ((+) (String.length arrowStr))
+--                 |> Maybe.withDefault 8
+--         name button =
+--             case button of
+--                 Cw ->
+--                     "ROTATE CLOCKWISE"
+--                 R180 ->
+--                     "ROTATE 180 DEGREES"
+--                 Ccw ->
+--                     "ROTATE COUNTER-CLOCKWISE"
+--                 Left ->
+--                     "MOVE LEFT"
+--                 Right ->
+--                     "MOVE RIGHT"
+--                 HD ->
+--                     "HARD DROP"
+--                 SD ->
+--                     "SOFT DROP"
+--                 Hold ->
+--                     "HOLD"
+--                 Undo ->
+--                     "UNDO"
+--                 Redo ->
+--                     "REDO"
+--         format str =
+--             if str == " " then
+--                 "[SPACE]"
+--             else if String.length str > 1 then
+--                 "[" ++ str ++ "]"
+--             else
+--                 String.toUpper str
+--         keys button =
+--             settings.controls
+--                 |> Dict.toList
+--                 |> List.filter (Tuple.second >> (==) button)
+--                 |> List.map Tuple.first
+--                 |> List.map format
+--                 |> String.join ","
+--         arrowStr =
+--             "-> "
+--         arrow button =
+--             if settings.setInputMode == Setting button then
+--                 arrowStr
+--             else
+--                 ""
+--         mappingAsString button =
+--             let
+--                 n =
+--                     name button
+--                 a =
+--                     arrow button
+--                 k =
+--                     keys button
+--                 dots =
+--                     String.repeat (width - String.length n - String.length a - String.length k) "."
+--             in
+--             n ++ dots ++ a ++ k
+--     in
+-- viewHandling : Settings.Handling -> Element HandlingMsg
+-- viewHandling handling =
 
 
 beginMovement : Settings.Handling -> Controller -> Tetromino -> Tetromino
@@ -454,7 +451,24 @@ beginMovement handling controller tetromino =
         tetromino
 
 
-tick : Time.Posix -> Settings -> Controller -> Game -> ( Game, Msg )
+update : Msg -> Game -> Game
+update msg game =
+    case msg of
+        NoMsg ->
+            game
+
+        TextureLoaded mino ->
+            { game
+                | res =
+                    let
+                        res =
+                            game.res
+                    in
+                    { res | mino = mino }
+            }
+
+
+tick : Time.Posix -> Settings -> Controller -> Game -> ( Game, Cmd )
 tick time settings controller game =
     let
         tetromino =
@@ -466,7 +480,7 @@ tick time settings controller game =
             tetromino
                 |> collide game.board game.tetromino
       }
-    , Noop
+    , NoCmd
     )
 
 
@@ -748,7 +762,7 @@ getSpin rotate board tetromino =
         Nothing
 
 
-onPress : Controller.Button -> Settings -> Game -> ( Game, Msg )
+onPress : Controller.Button -> Settings -> Game -> ( Game, Cmd )
 onPress button settings game =
     let
         pressRotate rotate =
@@ -758,9 +772,6 @@ onPress button settings game =
 
                 Just ( kx, ky ) ->
                     let
-                        _ =
-                            Debug.log "kickback" ( kx, ky )
-
                         t =
                             game.tetromino
                     in
@@ -776,7 +787,7 @@ onPress button settings game =
     in
     case button of
         SD ->
-            ( { game | tetromino = softDrop settings.handling.sdf game.tetromino }, Noop )
+            ( { game | tetromino = softDrop settings.handling.sdf game.tetromino }, NoCmd )
 
         HD ->
             ( { game
@@ -796,7 +807,7 @@ onPress button settings game =
 
                 Nothing ->
                     { game | hold = Just game.tetromino.letter } |> nextTetromino
-            , Noop
+            , NoCmd
             )
 
         Left ->
@@ -804,7 +815,7 @@ onPress button settings game =
                 | tetromino = Tetromino.move settings.handling Tetromino.Das Tetromino.Left game.tetromino
                 , movements = game.movements + 1
               }
-            , Noop
+            , NoCmd
             )
 
         Right ->
@@ -812,17 +823,17 @@ onPress button settings game =
                 | tetromino = Tetromino.move settings.handling Tetromino.Das Tetromino.Right game.tetromino
                 , movements = game.movements + 1
               }
-            , Noop
+            , NoCmd
             )
 
         Cw ->
-            ( pressRotate Orientation.cw, Noop )
+            ( pressRotate Orientation.cw, NoCmd )
 
         Ccw ->
-            ( pressRotate Orientation.ccw, Noop )
+            ( pressRotate Orientation.ccw, NoCmd )
 
         R180 ->
-            ( pressRotate (Orientation.ccw << Orientation.ccw), Noop )
+            ( pressRotate (Orientation.ccw << Orientation.ccw), NoCmd )
 
         Controller.Undo ->
             ( game, Undo )
@@ -842,11 +853,6 @@ endTurn game =
         |> nextTetromino
         |> clearLines
         |> restockQueue
-
-
-newBagGenerator : Random.Generator (List Letter)
-newBagGenerator =
-    Random.List.shuffle [ I, L, J, S, Z, O, T ]
 
 
 resolve : Board -> Int -> Int -> (Int -> Tetromino -> Tetromino) -> Tetromino -> Tetromino
