@@ -7,7 +7,6 @@ module Game exposing
     , screenHeight
     , screenWidth
     , tick
-    , update
     , view
     )
 
@@ -138,7 +137,7 @@ view game =
                         in
                         case Board.get x y game.board of
                             Board.Mino letter ->
-                                [ Render.setPalette game.res.palette (Letter.toInt letter)
+                                [ Render.setPalette game.res.minoPalette (Letter.toInt letter)
                                 , Render.drawTexture (toFloat <| gridSize * x + boardOrigin.x) (toFloat <| gridSize * y + boardOrigin.y) game.res.mino
                                 ]
 
@@ -152,7 +151,7 @@ view game =
         drawTetromino : Tetromino -> Float -> Float -> List Render.Command
         drawTetromino tetromino offx offy =
             List.concat
-                [ [ Render.setPalette game.res.palette (Letter.toInt tetromino.letter) ]
+                [ [ Render.setPalette game.res.minoPalette (Letter.toInt tetromino.letter) ]
                 , tetromino
                     |> Tetromino.minos
                     |> List.map
@@ -183,37 +182,62 @@ view game =
             in
             drawTetromino tetromino (offx + toFloat ioOffset) (offy + toFloat iOffset)
 
-        fg =
-            [ Render.drawTexture 0 0 game.res.vines ]
+        interface =
+            List.concat
+                [ case game.hold of
+                    Nothing ->
+                        []
 
-        bg =
-            [ Render.drawTexture 0 0 game.res.decor
-            , Render.drawTexture 0 0 game.res.text
-            , Render.drawTexture 0 0 game.res.grid
+                    Just hold ->
+                        drawCenteredTetromino { letter = hold, orientation = North, x = A.init { position = 0, motion = Nothing }, y = A.init 0 }
+                            (boardOrigin.x - 55)
+                            (boardOrigin.y + 63)
+                , game.queue
+                    |> List.take Settings.queueLength
+                    |> List.indexedMap
+                        (\i letter ->
+                            drawCenteredTetromino { letter = letter, orientation = North, x = A.init { position = 0, motion = Nothing }, y = A.init 0 }
+                                (toFloat (boardOrigin.x + Board.width * gridSize + 35))
+                                (toFloat (boardOrigin.y + 63 + i * round (2.8 * gridSize)))
+                        )
+                    |> List.concat
+                ]
+
+        settings =
+            [--Render.text "hello"
             ]
     in
     List.concat
-        [ bg
-        , board
-        , drawTetromino game.tetromino boardOrigin.x boardOrigin.y
-        , case game.hold of
-            Nothing ->
-                []
+        [ -- Background
+          [ Render.drawTexture 0 0 game.res.decor
+          , Render.drawTexture 0 0 game.res.text
+          , Render.drawTexture -1 0 game.res.grid
+          ]
 
-            Just hold ->
-                drawCenteredTetromino { letter = hold, orientation = North, x = A.init { position = 0, motion = Nothing }, y = A.init 0 }
-                    (boardOrigin.x - 55)
-                    (boardOrigin.y + 63)
-        , game.queue
-            |> List.take Settings.queueLength
-            |> List.indexedMap
-                (\i letter ->
-                    drawCenteredTetromino { letter = letter, orientation = North, x = A.init { position = 0, motion = Nothing }, y = A.init 0 }
-                        (toFloat (boardOrigin.x + Board.width * gridSize + 35))
-                        (toFloat (boardOrigin.y + 63 + i * round (2.8 * gridSize)))
-                )
-            |> List.concat
-        , fg
+        -- Board
+        , board
+
+        -- Ghost
+        , List.concat
+            [ [ Render.setPalette game.res.ghostPalette (Letter.toInt game.tetromino.letter) ]
+            , game.tetromino
+                |> Tetromino.minos
+                |> List.map
+                    (\( x, y ) ->
+                        Render.drawTexture
+                            (toFloat (gridSize * x) + boardOrigin.x)
+                            (toFloat (gridSize * (y + ghostY game.board game.tetromino - Tetromino.getY game.tetromino)) + boardOrigin.y)
+                            game.res.ghost
+                    )
+            , [ Render.resetPalette ]
+            ]
+
+        -- Tetromino
+        , drawTetromino game.tetromino boardOrigin.x boardOrigin.y
+
+        -- Foreground
+        , [ Render.drawTexture 0 0 game.res.vines ]
+        , interface
         ]
 
 
@@ -449,23 +473,6 @@ beginMovement handling controller tetromino =
 
     else
         tetromino
-
-
-update : Msg -> Game -> Game
-update msg game =
-    case msg of
-        NoMsg ->
-            game
-
-        TextureLoaded mino ->
-            { game
-                | res =
-                    let
-                        res =
-                            game.res
-                    in
-                    { res | mino = mino }
-            }
 
 
 tick : Time.Posix -> Settings -> Controller -> Game -> ( Game, Cmd )

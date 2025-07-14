@@ -13,6 +13,7 @@ import Html.Events
 import Html.Keyed
 import Json.Decode as Decode
 import Json.Encode as Encode
+import Json.Print as Print
 import Random
 import Render
 import Resources exposing (Resources)
@@ -87,10 +88,20 @@ init : Decode.Value -> Url -> Browser.Navigation.Key -> ( Model, Cmd msg )
 init flags _ _ =
     case Decode.decodeValue flagDecoder flags of
         Err error ->
-            error
-                |> Decode.errorToString
-                |> Debug.log "error loading flags"
-                |> Debug.todo ""
+            let
+                _ =
+                    Debug.log "error loading flags" ()
+
+                _ =
+                    error
+                        |> Decode.errorToString
+                        |> Debug.log "error"
+
+                _ =
+                    Print.prettyValue { columns = 80, indent = 0 } flags
+                        |> Debug.log "flags"
+            in
+            Debug.todo "fuck you" ()
 
         Ok { settings, resources, seed } ->
             ( { controller = Controller.default
@@ -247,7 +258,7 @@ view model =
     , body =
         let
             scale =
-                2
+                3
         in
         [ Html.canvas [ Attr.width (scale * Game.screenWidth), Attr.height (scale * Game.screenHeight), Attr.id "game", Attr.style "display" "none" ] []
         , Html.canvas [ Attr.width (scale * Game.screenWidth), Attr.height (scale * Game.screenHeight), Attr.id "downscaled-game" ] []

@@ -1,0 +1,11 @@
+[
+  ["mino", "res/images/mino-default.png"],
+  ["mino-palette", "res/images/mino-default-palette.png"],
+  ["ghost", "res/images/ghost.png"],
+  ["ghost-palette", "res/images/ghost-palette.png"],
+
+  ["vines", "res/images/vines.png"],
+  ["text", "res/images/text.png"],
+  ["decor", "res/images/decor.png"],
+  ["grid", "res/images/grid.png"]
+]

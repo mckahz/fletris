@@ -6,7 +6,9 @@ import Texture exposing (Texture)
 
 type alias Resources =
     { mino : Texture
-    , palette : Texture
+    , minoPalette : Texture
+    , ghost : Texture
+    , ghostPalette : Texture
     , vines : Texture
     , text : Texture
     , decor : Texture
@@ -14,11 +16,17 @@ type alias Resources =
     }
 
 
+map8 fn =
+    Decode.map8 fn
+
+
 decoder : Decode.Decoder Resources
 decoder =
-    Decode.map6 Resources
+    map8 Resources
         (Decode.field "mino" Texture.decoder)
-        (Decode.field "palette" Texture.decoder)
+        (Decode.field "mino-palette" Texture.decoder)
+        (Decode.field "ghost" Texture.decoder)
+        (Decode.field "ghost-palette" Texture.decoder)
         (Decode.field "vines" Texture.decoder)
         (Decode.field "text" Texture.decoder)
         (Decode.field "decor" Texture.decoder)
